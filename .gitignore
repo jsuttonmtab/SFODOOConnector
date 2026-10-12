@@ -6,3 +6,4 @@ __pycache__/
 config.local.*
 odoo_fields.json
 *.log
+missing_country.csv
