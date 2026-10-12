@@ -141,6 +141,38 @@ The connector must write those in the context of the order's company.
 Salesforce only has two billing entities: `mTab LLC` and `G.A.M.M.A`. Each needs
 to map to one Odoo company. **Open:** which Odoo `res.company` record is each one?
 
+### 4.1a Country matching
+Sandbox data (2026-10-12): about 2,200 accounts. 1,043 have no `BillingCountry`;
+the rest use 51 distinct spellings. Matching rule, in order:
+
+1. Case-insensitive match on `res.country.name` (handles `GERMANY`, `PHILIPPINES`)
+2. Case-insensitive match on `res.country.code` (handles `US`)
+3. Alias table below
+4. No match → leave `country_id` blank, log a warning, still create the partner
+
+| SF value | ISO code |
+|---|---|
+| USA, US, United States | US |
+| UK, United Kingdom | GB |
+| UAE, U.A.E., United Arab Emirates | AE |
+| Korea, South Korea, Republic of Korea | KR |
+| China, Peoples Republic of China, PRC (China) | CN |
+| The Netherlands | NL |
+| Russia | RU |
+| Turkey | TR |
+| Czech Republic | CZ |
+| Vietnam | VN |
+| Taiwan | TW |
+
+The last five are in the table because Odoo's display names may differ
+(e.g. "Türkiye", "Czechia", "Russian Federation"). Matching by code avoids that.
+
+A missing country matters for invoicing, since Odoo's fiscal positions and taxes
+depend on it. In the sandbox, 0 accounts with a stage-07 opportunity lack a
+country, but 79 accounts with only `Closed` opportunities do. They matter only if
+historical orders are migrated or those customers win new deals. The connector
+should report any customer it syncs without a country.
+
 ### 4.2 Currency on the customer
 Odoo has no settable currency on a partner. Currency comes from the pricelist on
 the order. The account-level `CurrencyIsoCode` therefore sets the partner's
@@ -154,9 +186,18 @@ new orders.
 
 **Finding on the current Celigo filter:** the Opportunity has a
 `Send_to_NetSuite__c` checkbox and a `celigo_sfnsio__Skip_Export_To_NetSuite__c`
-checkbox. That suggests the existing flow is triggered by a checkbox, not
-purely by stage, which would explain the doubt in the requirements doc. Run the
-query in §7 to see which stages the checked opportunities are actually in.
+checkbox. In the sandbox, no opportunity currently has `Send_to_NetSuite__c`
+checked, so it's either cleared after export or unused.
+
+Opportunities that actually reached NetSuite (have `celigo_sfnsio__NetSuite_Id__c`),
+by stage: Closed 1,564; 07 Award Won 336; Award Lost 8; 02 Demo 1; 01 Discovery 2.
+So Celigo effectively syncs at award-won, and won deals later move to `Closed`.
+The 11 synced deals now in Award Lost or early stages need review: NetSuite has
+orders for deals Salesforce no longer shows as won.
+
+**Consequence for the connector:** `Closed` opportunities must keep receiving
+updates (they are post-award), but whether they are created in Odoo depends on
+the migration decision (§7, item 11).
 
 Proposed create filter: `StageName = '07: Award Won / Contract signed'`, and
 optionally a new `Send_to_Odoo__c` checkbox if finance wants a manual gate.
@@ -240,10 +281,13 @@ production.
 | 8 | Billing schedule: store only, or should Odoo generate invoices from it? | Finance |
 | 9 | Limebox line-removal diagram; end of the invoice section of the requirements doc | Requirements author |
 | 10 | Admin: integration user, OAuth app, `Odoo_Id__c` / `Odoo_Record__c` / `Odoo_Sync_Error__c` fields, field locks | SF admin |
+| 11 | Migration: cutover only, migrate open orders, or migrate all ~1,900 NetSuite-synced opportunities? | Finance |
+| 12 | Review the 11 NetSuite-synced opportunities now in Award Lost / early stages | Finance / sales ops |
+| 13 | Fix billing country on the 79 won customers that lack one (if migrating) | Sales ops |
 
 Diagnostic queries (run with `--target-org mtab-sandbox`):
 
 ```
-sf data query --query "SELECT StageName, COUNT(Id) FROM Opportunity WHERE Send_to_NetSuite__c = true GROUP BY StageName"
-sf data query --query "SELECT BillingCountry, COUNT(Id) FROM Account GROUP BY BillingCountry ORDER BY COUNT(Id) DESC"
+sf data query --query "SELECT StageName, COUNT(Id) FROM Opportunity WHERE celigo_sfnsio__NetSuite_Id__c != null GROUP BY StageName"
+sf data query --query "SELECT Id, Name, ShippingCountry FROM Account WHERE BillingCountry = null AND Id IN (SELECT AccountId FROM Opportunity WHERE StageName IN ('07: Award Won / Contract signed', 'Closed'))" --result-format csv
 ```
