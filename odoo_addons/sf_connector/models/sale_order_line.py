@@ -26,6 +26,17 @@ class SaleOrderLine(models.Model):
     sf_wave_period = fields.Char(
         string='Wave Period',
     )
+    sf_delivery = fields.Selection(
+        selection=[
+            ('classic', 'Classic'),
+            ('halo', 'Halo'),
+            ('both', 'Both'),
+        ],
+        string='Delivery',
+    )
+    sf_information_only = fields.Boolean(
+        string='Information Only',
+    )
     sf_is_upsell = fields.Boolean(
         string='Upsell',
     )

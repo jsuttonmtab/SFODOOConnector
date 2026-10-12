@@ -12,7 +12,7 @@ class SaleOrder(models.Model):
         help='Salesforce Opportunity Id. Upsert key for the connector.',
     )
     sf_revenue_allocation_company_id = fields.Many2one(
-        'res.company',
+        'res.partner',
         string='Revenue Allocation Company',
     )
     sf_award_won_date = fields.Date(
@@ -22,7 +22,13 @@ class SaleOrder(models.Model):
     sf_term_start_date = fields.Date(
         string='Term Start Date',
     )
-    sf_opportunity_type = fields.Char(
+    sf_opportunity_type = fields.Selection(
+        selection=[
+            ('new', 'New'),
+            ('up_sell', 'Up Sell'),
+            ('cross_sell', 'Cross Sell'),
+            ('renewal', 'Renewal'),
+        ],
         string='Opportunity Type',
     )
     sf_description = fields.Text(
@@ -31,6 +37,10 @@ class SaleOrder(models.Model):
     )
     sf_invoice_additional_info = fields.Text(
         string='Additional Invoice Information',
+    )
+    sf_invoice_notes = fields.Text(
+        string='Invoice Notes',
+        help='Internal.',
     )
     # Picklist values not yet known; stored as the raw Salesforce value.
     sf_billing_distribution_method = fields.Char(
