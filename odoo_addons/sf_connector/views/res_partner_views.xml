@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_partner_form_sf_connector" model="ir.ui.view">
+        <field name="name">res.partner.form.sf_connector</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <page string="Salesforce" name="sf_connector">
+                    <group>
+                        <group string="Salesforce">
+                            <field name="sf_account_id" readonly="1"/>
+                            <field name="sf_legal_entity_name" readonly="1"/>
+                            <field name="sf_billing_distribution_method" readonly="1"/>
+                            <field name="sf_default_billing_entity_id" readonly="1"/>
+                        </group>
+                    </group>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>

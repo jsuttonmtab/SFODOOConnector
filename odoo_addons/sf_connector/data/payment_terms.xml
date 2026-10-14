@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!--
+        Salesforce Payment_Terms__c values, synced by name.
+        "Net X": due X days after invoice date.
+        "Net X EOM": due X days after the end of the invoice month.
+        "Net 45 PSA": meaning not yet confirmed by Finance; treated as Net 45.
+        noupdate: Finance may edit these in Odoo without an upgrade overwriting them.
+    -->
+    <data noupdate="1">
+        <record id="sf_payment_term_net_30" model="account.payment.term">
+            <field name="name">Net 30</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 30, 'delay_type': 'days_after'})]"/>
+        </record>
+        <record id="sf_payment_term_net_30_eom" model="account.payment.term">
+            <field name="name">Net 30 EOM</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 30, 'delay_type': 'days_after_end_of_month'})]"/>
+        </record>
+        <record id="sf_payment_term_net_45" model="account.payment.term">
+            <field name="name">Net 45</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 45, 'delay_type': 'days_after'})]"/>
+        </record>
+        <record id="sf_payment_term_net_45_psa" model="account.payment.term">
+            <field name="name">Net 45 PSA</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 45, 'delay_type': 'days_after'})]"/>
+        </record>
+        <record id="sf_payment_term_net_55" model="account.payment.term">
+            <field name="name">Net 55</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 55, 'delay_type': 'days_after'})]"/>
+        </record>
+        <record id="sf_payment_term_net_60" model="account.payment.term">
+            <field name="name">Net 60</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 60, 'delay_type': 'days_after'})]"/>
+        </record>
+        <record id="sf_payment_term_net_60_eom" model="account.payment.term">
+            <field name="name">Net 60 EOM</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 60, 'delay_type': 'days_after_end_of_month'})]"/>
+        </record>
+        <record id="sf_payment_term_net_65" model="account.payment.term">
+            <field name="name">Net 65</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 65, 'delay_type': 'days_after'})]"/>
+        </record>
+        <record id="sf_payment_term_net_75" model="account.payment.term">
+            <field name="name">Net 75</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 75, 'delay_type': 'days_after'})]"/>
+        </record>
+        <record id="sf_payment_term_net_90" model="account.payment.term">
+            <field name="name">Net 90</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 90, 'delay_type': 'days_after'})]"/>
+        </record>
+        <record id="sf_payment_term_net_120" model="account.payment.term">
+            <field name="name">Net 120</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 120, 'delay_type': 'days_after'})]"/>
+        </record>
+        <record id="sf_payment_term_net_180" model="account.payment.term">
+            <field name="name">Net 180</field>
+            <field name="line_ids" eval="[(0, 0, {'value': 'percent', 'value_amount': 100.0, 'nb_days': 180, 'delay_type': 'days_after'})]"/>
+        </record>
+    </data>
+</odoo>

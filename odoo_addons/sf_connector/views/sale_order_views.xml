@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_order_form_sf_connector" model="ir.ui.view">
+        <field name="name">sale.order.form.sf_connector</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+            <!-- Salesforce tab on the order -->
+            <xpath expr="//notebook" position="inside">
+                <page string="Salesforce" name="sf_connector">
+                    <group>
+                        <group string="Opportunity">
+                            <field name="sf_opportunity_id" readonly="1"/>
+                            <field name="sf_stage" readonly="1"/>
+                            <field name="sf_opportunity_type" readonly="1"/>
+                            <field name="sf_award_won_date" readonly="1"/>
+                            <field name="sf_term_start_date" readonly="1"/>
+                            <field name="sf_revenue_allocation_company_id" readonly="1"/>
+                        </group>
+                        <group string="Billing">
+                            <field name="sf_billing_distribution_method" readonly="1"/>
+                            <field name="sf_vat_number" readonly="1"/>
+                            <field name="sf_invoice_notes" readonly="1"/>
+                            <field name="sf_invoice_additional_info" readonly="1"/>
+                        </group>
+                    </group>
+                    <group>
+                        <field name="sf_description" readonly="1"/>
+                    </group>
+                </page>
+            </xpath>
+
+            <!-- Salesforce line fields as optional columns in the order lines list -->
+            <xpath expr="//field[@name='order_line']/list" position="inside">
+                <field name="sf_line_id" readonly="1" optional="hide"/>
+                <field name="sf_data_vendor" readonly="1" optional="hide"/>
+                <field name="sf_coverage_period" readonly="1" optional="hide"/>
+                <field name="sf_study_type" readonly="1" optional="hide"/>
+                <field name="sf_study_name" readonly="1" optional="hide"/>
+                <field name="sf_wave_period" readonly="1" optional="hide"/>
+                <field name="sf_delivery" readonly="1" optional="hide"/>
+                <field name="sf_is_upsell" readonly="1" optional="hide"/>
+                <field name="sf_information_only" readonly="1" optional="hide"/>
+                <field name="sf_on_hold" readonly="1" optional="hide"/>
+                <field name="sf_removed_in_sf" readonly="1" optional="hide"/>
+                <field name="sf_term_start_date" readonly="1" optional="hide"/>
+                <field name="sf_term_end_date" readonly="1" optional="hide"/>
+                <field name="sf_billing_schedule" readonly="1" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

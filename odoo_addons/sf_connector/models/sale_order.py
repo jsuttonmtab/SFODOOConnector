@@ -46,6 +46,14 @@ class SaleOrder(models.Model):
     sf_billing_distribution_method = fields.Char(
         string='Billing Distribution Method',
     )
+    sf_vat_number = fields.Char(
+        string='Salesforce VAT Number',
+        help='Salesforce VAT_Tax_Number__c. Kept from NetSuite. Invoices use the customer VAT.',
+    )
+    sf_stage = fields.Char(
+        string='Salesforce Stage',
+        help='Current Salesforce StageName, for visibility and the stage-reversal rule.',
+    )
 
     _sf_opportunity_id_unique = models.Constraint(
         'UNIQUE(sf_opportunity_id)',

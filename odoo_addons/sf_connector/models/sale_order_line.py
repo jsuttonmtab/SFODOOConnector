@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
+import logging
+
 from odoo import fields, models
+
+_logger = logging.getLogger(__name__)
 
 
 class SaleOrderLine(models.Model):
@@ -43,6 +47,10 @@ class SaleOrderLine(models.Model):
     sf_on_hold = fields.Boolean(
         string='On Hold',
     )
+    sf_removed_in_sf = fields.Boolean(
+        string='Removed in Salesforce',
+        help='Line was removed in Salesforce. Kept at quantity 0 as a change log.',
+    )
     sf_term_start_date = fields.Date(
         string='Term Start Date',
     )
@@ -58,3 +66,38 @@ class SaleOrderLine(models.Model):
         'UNIQUE(sf_line_id)',
         'Another order line already has this Salesforce Line ID.',
     )
+
+    def write(self, vals):
+        # Only lines whose hold flag actually changes need their deliverables updated.
+        changed = self.browse()
+        if 'sf_on_hold' in vals:
+            changed = self.filtered(lambda line: line.sf_on_hold != bool(vals['sf_on_hold']))
+        res = super().write(vals)
+        if changed:
+            changed._sf_sync_deliverable_hold(bool(vals['sf_on_hold']))
+        return res
+
+    def _sf_sync_deliverable_hold(self, on_hold):
+        """Set the hold state on deliverables that have not been delivered yet.
+
+        Never raises: a failure is logged and the line write goes ahead. The savepoint
+        stops a failed deliverable write from aborting the transaction.
+        """
+        try:
+            with self.env.cr.savepoint():
+                deliverables = self.env['lb.item.deliverable'].search([
+                    ('sale_line_id', 'in', self.ids),
+                    ('is_fulfilled', '=', False),
+                    ('delivery_marked_datetime', '=', False),
+                ])
+                deliverables = deliverables.filtered(
+                    lambda d: d.dispatch_status != ('on_hold' if on_hold else 'dispatchable')
+                )
+                deliverables.write({
+                    'dispatch_status': 'on_hold' if on_hold else 'dispatchable',
+                })
+        except Exception:
+            _logger.exception(
+                'sf_connector: could not set deliverable hold=%s for order lines %s',
+                on_hold, self.ids,
+            )
