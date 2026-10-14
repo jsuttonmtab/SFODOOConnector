@@ -1,6 +1,7 @@
 """Sync Salesforce Accounts that have a stage-07 opportunity into Odoo customers (res.partner).
 
 Mapping: docs/field-mapping.md §1, §4.1, §4.1a, §4.3. Upsert key: res.partner.sf_account_id.
+Parent accounts (ParentId chain) are synced too, as companies, so parent_id links resolve.
 Salesforce is read only. Nothing is written back.
 
     python -m connector.sync_accounts --dry-run   # report what would change, write nothing
@@ -8,8 +9,9 @@ Salesforce is read only. Nothing is written back.
 """
 import argparse
 import html
+import re
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 
 from . import config
 from .countries import AddressMatcher
@@ -36,6 +38,9 @@ M2O_FIELDS = {
 }
 CHILD_FIELDS = ["id", "parent_id", "name", "street", "city", "zip", "state_id", "country_id"]
 
+# Sandbox masks some user emails with a ".invalid" suffix.
+INVALID_EMAIL_SUFFIX = re.compile(r"\.invalid$", re.IGNORECASE)
+
 # Returned by parent_id() for a parent that only exists in this run's dry run.
 PENDING = object()
 
@@ -44,16 +49,44 @@ def soql_literal(value):
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def build_soql():
+def test_name_filter():
     names = ", ".join(soql_literal(n) for n in sorted(config.TEST_ACCOUNT_NAMES))
-    name_filter = f"AND Name NOT IN ({names})" if names else ""
+    return f"AND Name NOT IN ({names})" if names else ""
+
+
+def build_soql():
     return f"""SELECT {', '.join(SF_FIELDS)}
 FROM Account
 WHERE celigo_sfnsio__Test_Mode_Record__c = false
-{name_filter}
+{test_name_filter()}
 AND Id IN (SELECT AccountId FROM Opportunity
   WHERE StageName = {soql_literal(config.STAGE_AWARD_WON)}
   AND celigo_sfnsio__Test_Mode_Record__c = false)"""
+
+
+def build_parent_soql(ids):
+    id_list = ", ".join(soql_literal(i) for i in ids)
+    return f"""SELECT {', '.join(SF_FIELDS)}
+FROM Account
+WHERE Id IN ({id_list})
+AND celigo_sfnsio__Test_Mode_Record__c = false
+{test_name_filter()}"""
+
+
+def fetch_parent_chain(sf, accounts):
+    """Walk ParentId upwards from the qualifying accounts. Returns the parent accounts only."""
+    visited = {acc["Id"] for acc in accounts}
+    frontier = {acc["ParentId"] for acc in accounts if acc.get("ParentId")} - visited
+    parents = []
+    while frontier:
+        visited |= frontier
+        ids = sorted(frontier)
+        found = []
+        for i in range(0, len(ids), 200):
+            found += sf.query(build_parent_soql(ids[i:i + 200]))
+        parents += found
+        frontier = {p["ParentId"] for p in found if p.get("ParentId")} - visited
+    return parents
 
 
 def text(value):
@@ -100,9 +133,11 @@ class AccountSync:
         self.odoo = odoo
         self.dry_run = dry_run
         self.counts = Counter()
-        self.warned = set()
+        self.warnings = defaultdict(list)  # kind -> ["<account>: <detail>", ...]
+        self.pricelist_pending = set()     # currencies whose pricelist would be created (dry run)
+        self.parent_ids = set()
 
-    # ----- reference data (read once per run) -----
+    # ----- reference data -----
 
     def load_reference(self):
         odoo = self.odoo
@@ -119,7 +154,11 @@ class AccountSync:
 
         self.companies = {c["name"]: c["id"] for c in odoo.search_read("res.company", [], ["id", "name"])}
 
-        currency_names = {c["id"]: c["name"] for c in odoo.search_read("res.currency", [], ["id", "name"])}
+        self.currencies = {
+            c["name"]: c for c in odoo.search_read(
+                "res.currency", [("active", "in", [True, False])], ["id", "name", "active"])
+        }
+        currency_names = {c["id"]: c["name"] for c in self.currencies.values()}
         self.pricelists = {}
         for pricelist in odoo.search_read("product.pricelist", [], ["id", "name", "currency_id", "company_id"]):
             code = currency_names.get(m2o_id(pricelist["currency_id"]))
@@ -128,6 +167,34 @@ class AccountSync:
         # Shared pricelists first, then lowest id. Used only when a currency has several.
         for candidates in self.pricelists.values():
             candidates.sort(key=lambda p: (bool(m2o_id(p["company_id"])), p["id"]))
+
+    def prepare_pricelists(self, accounts):
+        """Make sure every currency used has a pricelist. Creates 'SF <CUR>' when missing.
+
+        Raises before any write if a currency is missing or inactive, so the run stops early.
+        """
+        codes = {text(acc.get("CurrencyIsoCode")) for acc in accounts} - {False}
+        for code in sorted(codes):
+            if self.pricelists.get(code):
+                continue
+            currency = self.currencies.get(code)
+            if not currency:
+                raise OdooError(f"currency {code} does not exist in Odoo; cannot sync accounts in {code}")
+            if not currency["active"]:
+                raise OdooError(
+                    f"currency {code} is inactive in Odoo; activate it, then rerun (no accounts were written)"
+                )
+            name = f"SF {code}"
+            if self.dry_run:
+                self.pricelist_pending.add(code)
+                print(f"[dry-run] would create pricelist {name} (shared, {code})")
+                continue
+            new_id = self.odoo.create(
+                "product.pricelist", [{"name": name, "currency_id": currency["id"], "company_id": False}]
+            )[0]
+            self.pricelists[code] = [{"id": new_id, "company_id": False}]
+            print(f"created pricelist {name} (id {new_id}, shared, {code})")
+            self.counts["pricelists_created"] += 1
 
     def load_existing(self):
         """Partners that already carry an sf_account_id, and their delivery children."""
@@ -153,21 +220,28 @@ class AccountSync:
 
     def report(self, action, acc, detail=""):
         prefix = "[dry-run] would " if self.dry_run else ""
-        print(f"{prefix}{action}: {acc['Id']} {acc['Name']}" + (f" | {detail}" if detail else ""))
+        role = " (parent)" if acc["Id"] in self.parent_ids else ""
+        print(f"{prefix}{action}: {acc['Id']} {acc['Name']}{role}" + (f" | {detail}" if detail else ""))
 
-    def warn(self, message, acc=None):
-        self.counts["warnings"] += 1
-        where = f"{acc['Id']} {acc['Name']}: " if acc else ""
-        print(f"WARN {where}{message}")
-
-    def warn_once(self, key, message):
-        if key not in self.warned:
-            self.warned.add(key)
-            self.warn(message)
+    def warn(self, kind, detail, acc=None):
+        where = f"{acc['Id']} {acc['Name']}" if acc else ""
+        entry = f"{where}: {detail}" if where and detail else (where or detail)
+        self.warnings[kind].append(entry)
 
     def error(self, acc, err):
         self.counts["errors"] += 1
         print(f"ERROR {acc['Id']} {acc['Name']}: {err}")
+
+    def print_warnings(self):
+        if not self.warnings:
+            print("\nNo warnings.")
+            return
+        total = sum(len(v) for v in self.warnings.values())
+        print(f"\nWarnings ({total}), grouped by type:")
+        for kind, examples in sorted(self.warnings.items(), key=lambda kv: -len(kv[1])):
+            print(f"  {len(examples):>5}  {kind}")
+            for example in examples[:3]:
+                print(f"           e.g. {example}")
 
     # ----- field mapping -----
 
@@ -175,24 +249,22 @@ class AccountSync:
         email = text((acc.get("Account_Manager__r") or {}).get("Email"))
         if not email:
             return False
+        email = INVALID_EMAIL_SUFFIX.sub("", email)
         user = self.users.get(email.lower())
         if not user:
-            self.warn(f"no Odoo user for account manager {email}", acc)
+            self.warn("no Odoo user for account manager (user left blank)", email, acc)
         return user or False
 
     def pricelist_id(self, acc):
         code = text(acc.get("CurrencyIsoCode"))
         if not code:
             return False
-        candidates = self.pricelists.get(code, [])
-        if not candidates:
-            self.warn_once(f"pricelist:{code}", f"no Odoo pricelist for currency {code}")
-            return False
+        if code in self.pricelist_pending:
+            return f"new pricelist SF {code}"
+        candidates = self.pricelists[code]
         if len(candidates) > 1:
-            self.warn_once(
-                f"pricelists:{code}",
-                f"{len(candidates)} pricelists for {code}; using id {candidates[0]['id']}",
-            )
+            self.warn("multiple pricelists for a currency (lowest id used)",
+                      f"{code}: {len(candidates)} candidates", acc)
         return candidates[0]["id"]
 
     def billing_entity_id(self, acc):
@@ -201,25 +273,26 @@ class AccountSync:
             return False
         company_name = config.BILLING_ENTITY_COMPANIES.get(raw)
         if not company_name:
-            self.warn(f"unknown billing entity {raw!r}", acc)
+            self.warn("unknown billing entity (left blank)", repr(raw), acc)
             return False
         company_id = self.companies.get(company_name)
         if not company_id:
-            self.warn(f"Odoo company {company_name!r} not found", acc)
+            self.warn("Odoo company not found (left blank)", repr(company_name), acc)
             return False
         return company_id
 
     def address(self, acc, prefix):
         """Address fields for Billing or Shipping. Returns (vals, country_id)."""
+        label = prefix.lower()
         country_raw = text(acc.get(f"{prefix}Country"))
         country_id = self.addr.country_id(country_raw)
         if country_raw and not country_id:
-            self.warn(f"{prefix.lower()} country {country_raw!r} not matched (4.1a)", acc)
+            self.warn(f"{label} country not matched (left blank)", repr(country_raw), acc)
 
         state_raw = text(acc.get(f"{prefix}State"))
         state_id = self.addr.state_id(country_id, state_raw) if state_raw else None
         if state_raw and not state_id:
-            self.warn(f"{prefix.lower()} state {state_raw!r} not matched", acc)
+            self.warn(f"{label} state not matched (left blank)", f"{state_raw!r} in {country_raw!r}", acc)
 
         return {
             "street": text(acc.get(f"{prefix}Street")),
@@ -245,7 +318,7 @@ class AccountSync:
         address, country_id = self.address(acc, "Billing")
         vals.update(address)
         if not country_id:
-            self.warn("synced without a billing country (4.1a)", acc)
+            self.warn("no billing country (left blank, 4.1a)", "", acc)
         return vals
 
     def parent_id(self, acc, odoo_ids, batch):
@@ -264,15 +337,19 @@ class AccountSync:
 
     # ----- run -----
 
-    def run(self, accounts):
+    def run(self, accounts, parents=()):
+        all_accounts = list(accounts) + list(parents)
+        self.parent_ids = {p["Id"] for p in parents}
         self.load_reference()
+        self.prepare_pricelists(all_accounts)
         self.load_existing()
-        batch = {acc["Id"] for acc in accounts}
+
+        batch = {acc["Id"] for acc in all_accounts}
         odoo_ids = {sf_id: rec["id"] for sf_id, rec in self.existing.items()}
         synced = set()
 
         # Pass 1: create or update each account's own fields.
-        for acc in accounts:
+        for acc in all_accounts:
             sf_id = acc["Id"]
             try:
                 vals = self.billing_vals(acc)
@@ -302,20 +379,21 @@ class AccountSync:
                 self.error(acc, err)
 
         # Pass 2: link parents now that every account in this batch has an id.
-        for acc in accounts:
+        for acc in all_accounts:
             sf_id = acc["Id"]
             if sf_id not in synced or (odoo_ids.get(sf_id) is None and not self.dry_run):
                 continue
             try:
                 parent = self.parent_id(acc, odoo_ids, batch)
                 if parent is None:
-                    self.warn("parent account is not in Odoo; parent link left blank", acc)
+                    self.warn("parent not synced: test-mode, excluded, or not in Salesforce (link left blank)",
+                              acc.get("ParentId", ""), acc)
                     continue
-                rec = self.existing.get(sf_id)
-                current = m2o_id(rec["parent_id"]) if rec else False
                 if parent is PENDING:
                     self.report("link parent", acc, "parent is created in this run")
                     continue
+                rec = self.existing.get(sf_id)
+                current = m2o_id(rec["parent_id"]) if rec else False
                 if parent == current:
                     continue
                 self.report("set parent", acc, f"parent_id: {show(current)} -> {show(parent)}")
@@ -326,7 +404,7 @@ class AccountSync:
                 self.error(acc, err)
 
         # Pass 3: delivery address (child partner) when shipping differs from billing.
-        for acc in accounts:
+        for acc in all_accounts:
             sf_id = acc["Id"]
             if sf_id not in synced or (odoo_ids.get(sf_id) is None and not self.dry_run):
                 continue
@@ -361,13 +439,14 @@ class AccountSync:
             self.counts["delivery_created"] += 1
 
     def summary(self):
+        self.print_warnings()
         c = self.counts
         mode = "dry run, nothing written" if self.dry_run else "written to Odoo"
         print(
             f"\nDone ({mode}): created {c['created']}, updated {c['updated']}, "
             f"unchanged {c['unchanged']}, parents set {c['parents_set']}, "
             f"delivery addresses created {c['delivery_created']} / updated {c['delivery_updated']}, "
-            f"warnings {c['warnings']}, errors {c['errors']}"
+            f"pricelists created {c['pricelists_created']}, errors {c['errors']}"
         )
 
 
@@ -381,13 +460,15 @@ def main(argv=None):
         odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY)
         sf = SalesforceClient(get_session())
         accounts = sf.query(build_soql())
+        parents = fetch_parent_chain(sf, accounts)
     except (OdooError, SalesforceError) as err:
         print(f"ERROR {err}")
         return 1
 
-    print(f"{len(accounts)} accounts with a {config.STAGE_AWARD_WON!r} opportunity")
+    print(f"{len(accounts)} accounts with a {config.STAGE_AWARD_WON!r} opportunity, "
+          f"{len(parents)} parent accounts added")
     try:
-        AccountSync(odoo, args.dry_run).run(accounts)
+        AccountSync(odoo, args.dry_run).run(accounts, parents)
     except OdooError as err:
         print(f"ERROR {err}")
         return 1
