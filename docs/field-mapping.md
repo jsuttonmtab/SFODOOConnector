@@ -311,10 +311,12 @@ setup.
 | `invoice_line_ids.sale_line_ids.order_id.sf_opportunity_id` | Which opportunity to attach to (an invoice can span orders) |
 | `name`, `invoice_date`, `amount_total`, `payment_state` | Optional invoice summary in SF |
 
-**Open:** SF has two attachment mechanisms that both appear under "Notes &
-Attachments": classic `Attachment` records and Files (`ContentVersion` linked via
-`ContentDocumentLink`). The connector must use the one the existing workflows
-read, and match the current file naming. Queries to check in §7.
+**Confirmed 2026-10-14:** Celigo attaches invoices as classic `Attachment` records
+(not Files) on the opportunity, named `<invoice number>.pdf` (e.g. `INVG011414.pdf`),
+created by the integration user. The connector does the same, replacing characters
+not allowed in filenames (e.g. `/`).
+
+**Open:** whether SF workflows depend on the invoice-number format.
 
 The "NetSuite Financials" box on the opportunity (`celigo_sfnsio__NetSuite_Financial__c`,
 a list of invoices and payment status) is reportedly not used by CS. Not
@@ -350,7 +352,7 @@ production.
 | # | Item | Who | Needed for testing? |
 |---|---|---|---|
 | 1 | Admin: integration user, OAuth app, `Odoo_Id__c` / `Odoo_Record__c` / `Odoo_Sync_Error__c` fields on Account and Opportunity, field locks | SF admin | Yes, for write-back |
-| 2 | Which attachment mechanism (Attachment vs Files) and file naming the SF invoice workflows rely on | Jason (query below) / CS | Yes, for invoice sync |
+| 2 | Which attachment mechanism (Attachment vs Files) and file naming the SF invoice workflows rely on. **Answered 2026-10-14:** classic Attachment records named `<invoice number>.pdf`, created by the integration user (§5). Open: whether SF workflows depend on the invoice-number format. | Jason (query below) / CS | Yes, for invoice sync (naming question for CS) |
 | 3 | Do Odoo products carry the SF `ProductCode` in `default_code`? | Jason | Yes |
 | 4 | Michael Martin's Celigo country alias list | Jason / Michael | Helpful |
 | 5 | What "Net 45 PSA" means | Finance | No |
