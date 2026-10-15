@@ -146,14 +146,14 @@ def plain_text(value):
 
 
 # Applied to both sides of a comparison. Fields not listed compare exactly.
-NORMALIZERS = {"vat": vat_compact, "website": website_key, "comment": plain_text}
+NORMALIZERS = {"vat": vat_compact, "website": website_key, "comment": plain_text, "note": plain_text}
 
 
-def diff(record, vals):
+def diff(record, vals, m2o_fields=M2O_FIELDS):
     """List of (field, current, wanted) for fields whose values differ after normalising."""
     changes = []
     for field, wanted in vals.items():
-        if field in M2O_FIELDS:
+        if field in m2o_fields:
             current = m2o_id(record.get(field))
         else:
             current = record.get(field) or False
