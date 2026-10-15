@@ -343,18 +343,17 @@ replicated for now.
 
 ## 6. New fields summary (`sf_connector` Odoo module)
 
-Installed (v19.0.1.1.0):
+Installed in **v19.0.1.5.0** (`odoo_addons/sf_connector`):
 
-- `res.partner`: `sf_account_id`, `sf_legal_entity_name`, `sf_billing_distribution_method`, `sf_default_billing_entity_id`
-- `sale.order`: `sf_opportunity_id`, `sf_revenue_allocation_company_id`, `sf_award_won_date`, `sf_term_start_date`, `sf_opportunity_type`, `sf_description`, `sf_invoice_notes`, `sf_invoice_additional_info`, `sf_billing_distribution_method`
-- `sale.order.line`: `sf_line_id`, `sf_data_vendor`, `sf_coverage_period`, `sf_study_type`, `sf_study_name`, `sf_wave_period`, `sf_is_upsell`, `sf_on_hold`, `sf_term_start_date`, `sf_term_end_date`, `sf_billing_schedule`, `sf_delivery`, `sf_information_only`
+- `res.partner`: `sf_account_id`, `sf_legal_entity_name`, `sf_billing_distribution_method`, `sf_default_billing_entity_id`, `sf_parent_account_id` (readonly; SF ParentId, not `parent_id`, see §1), `sf_vat_rejected` (readonly; SF VAT that Odoo rejected, see §1 VAT handling)
+- `sale.order`: `sf_opportunity_id`, `sf_revenue_allocation_company_id`, `sf_award_won_date`, `sf_term_start_date`, `sf_opportunity_type`, `sf_description`, `sf_invoice_notes`, `sf_invoice_additional_info`, `sf_billing_distribution_method`, `sf_vat_number`, `sf_stage`
+- `sale.order.line`: `sf_line_id`, `sf_data_vendor`, `sf_coverage_period`, `sf_study_type`, `sf_study_name`, `sf_wave_period`, `sf_delivery`, `sf_information_only`, `sf_is_upsell`, `sf_on_hold`, `sf_removed_in_sf`, `sf_term_start_date`, `sf_term_end_date`, `sf_billing_schedule`
 
-**Changes for v19.0.1.2.0** (from the 2026-10-14 answers):
-1. `sale.order.sf_vat_number` (Char).
-2. `sale.order.sf_stage` (Char, current SF stage).
-3. `sale.order.line.sf_removed_in_sf` (Boolean).
-4. Data file: the 12 payment terms (Net 30, 45, 55, 60, 65, 75, 90, 120, 180 = days after invoice date; Net 30 EOM, Net 60 EOM = days after end of month; Net 45 PSA = 45 days for now).
-5. On-hold propagation: when `sf_on_hold` changes on an order line, put its deliverables on hold (or release them) in `lb_item_deliverables`, using whatever on-hold state that module already has. This adds a dependency on `lb_item_deliverables`.
+Also installed:
+
+- Data: the 12 Salesforce payment terms (`data/payment_terms.xml`, `noupdate`).
+- Dependency: `lb_item_deliverables`. `sale.order.line` writes of `sf_on_hold` set `dispatch_status` on its deliverables, and new deliverables on a held line start on hold (`models/lb_item_deliverable.py`).
+- Views: a "Salesforce" tab on the customer and sales order forms, and the `sf_*` line fields as optional order-line columns. All `sf_*` fields are readonly.
 
 Dropped from the plan: `sf_credit_note_id` (no automatic un-billing, §4.4).
 
