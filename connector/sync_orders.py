@@ -10,6 +10,7 @@ Salesforce is read only. Nothing is written back.
 import argparse
 import sys
 from collections import Counter
+from datetime import date
 
 from . import config
 from .odoo_client import OdooClient, OdooError, m2o_id
@@ -22,6 +23,7 @@ from .sync_accounts import (
 STAGE_AWARD_WON = config.STAGE_AWARD_WON
 STAGE_CLOSED = "Closed"
 PLACEHOLDER_NEW_INVOICE_ADDRESS = "new invoice address"
+REVIEW_ACTIVITY_SUMMARY = "Salesforce stage left Award Won: review order"
 
 OPP_FIELDS = [
     "Id", "Name", "AccountId", "Account.Name", "StageName", "CurrencyIsoCode", "Owner.Email",
@@ -317,15 +319,78 @@ class OrderSync(AccountSync):
         self.counts["updated"] += 1
 
     def stage_reversal(self, opp, existing):
-        """§4.6: the opportunity left Award Won. Record the new stage and warn; do not change the order."""
+        """§4.6: the opportunity left Award Won. Do not change the order. Post a note, add a To Do
+        for the Finance user, and record the new stage. Only when the stage actually changes, so
+        re-runs do not repeat the note."""
         new_stage = opp["StageName"]
-        self.warn("stage moved out of Award Won (order not changed, review in Odoo)",
-                  f"{show(existing.get('sf_stage'))} -> {new_stage}", opp)
+        old_stage = existing.get("sf_stage")
+        change = f"{show(old_stage)} -> {new_stage}" if old_stage != new_stage else f"still {new_stage}"
+        self.warn("stage moved out of Award Won (order not changed, review in Odoo)", change, opp)
         self.counts["stage_reversals"] += 1
-        if existing.get("sf_stage") != new_stage:
-            self.report_order("update sf_stage", opp, f"{show(existing.get('sf_stage'))} -> {new_stage}")
-            if not self.dry_run:
-                self.odoo.write("sale.order", [existing["id"]], {"sf_stage": new_stage})
+        if old_stage == new_stage:
+            return
+
+        detail = f"{show(old_stage)} -> {new_stage}"
+        body = (f"Salesforce stage changed from {show(old_stage)} to {new_stage}. "
+                "The order was not changed; please review it.")
+        self.report_order("post note", opp, detail)
+        if not self.dry_run:
+            self.odoo.call("sale.order", "message_post", ids=[existing["id"]], body=body,
+                           message_type="comment", subtype_xmlid="mail.mt_note")
+        self.counts["notes_posted"] += 1
+        self.review_activity(opp, existing, body)
+
+        self.report_order("update sf_stage", opp, detail)
+        if not self.dry_run:
+            self.odoo.write("sale.order", [existing["id"]], {"sf_stage": new_stage})
+
+    def activity_refs(self):
+        if not hasattr(self, "_activity_refs"):
+            model = self.odoo.search_read("ir.model", [("model", "=", "sale.order")], ["id"])
+            todo = self.odoo.search_read("mail.activity.type", [("name", "=", "To Do")], ["id"])
+            self._activity_refs = {
+                "model_id": model[0]["id"] if model else None,
+                "todo_id": todo[0]["id"] if todo else None,
+            }
+        return self._activity_refs
+
+    def review_activity(self, opp, existing, body):
+        login = config.FINANCE_ACTIVITY_USER
+        if not login:
+            self.warn("FINANCE_ACTIVITY_USER not set (no To Do created)", "", opp)
+            return
+        user_id = self.users.get(login.lower())
+        if not user_id:
+            self.warn("FINANCE_ACTIVITY_USER login not found in Odoo (no To Do created)", login, opp)
+            return
+        refs = self.activity_refs()
+        if not refs["model_id"] or not refs["todo_id"]:
+            self.warn("sale.order or To Do activity type not found in Odoo (no To Do created)", "", opp)
+            return
+
+        open_activities = self.odoo.search_read(
+            "mail.activity",
+            [("res_model_id", "=", refs["model_id"]), ("res_id", "=", existing["id"]),
+             ("summary", "=", REVIEW_ACTIVITY_SUMMARY)],
+            ["id"],
+        )
+        if open_activities:
+            self.counts["activities_already_open"] += 1
+            self.report_order("skip To Do (one is already open)", opp)
+            return
+
+        self.report_order("create To Do", opp, f"for {login}")
+        if not self.dry_run:
+            self.odoo.create("mail.activity", [{
+                "res_model_id": refs["model_id"],
+                "res_id": existing["id"],
+                "activity_type_id": refs["todo_id"],
+                "summary": REVIEW_ACTIVITY_SUMMARY,
+                "note": body,
+                "user_id": user_id,
+                "date_deadline": date.today().isoformat(),
+            }])
+        self.counts["activities_created"] += 1
 
     def summary(self):
         c = self.counts
@@ -334,7 +399,9 @@ class OrderSync(AccountSync):
         self.print_warnings()
         print(
             f"\nDone ({mode}): created {c['created']}, updated {c['updated']}, unchanged {c['unchanged']}, "
-            f"stage reversals {c['stage_reversals']}, invoice addresses created {c['invoice_addresses_created']}, "
+            f"stage reversals {c['stage_reversals']} (notes {c['notes_posted']}, To Dos {c['activities_created']}, "
+            f"already open {c['activities_already_open']}), "
+            f"invoice addresses created {c['invoice_addresses_created']}, "
             f"pricelists created {c['pricelists_created']}, errors {c['errors']}"
         )
 

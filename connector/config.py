@@ -31,6 +31,9 @@ ODOO_API_KEY = os.environ.get("ODOO_API_KEY", "")
 # Salesforce org alias for the sf CLI.
 SF_TARGET_ORG = os.environ.get("SF_TARGET_ORG", "mtab-sandbox")
 
+# §4.6: login of the Odoo user who gets the To Do when a synced opportunity leaves Award Won.
+FINANCE_ACTIVITY_USER = os.environ.get("FINANCE_ACTIVITY_USER", "").strip()
+
 # §4.3: only opportunities at this stage create orders (and so bring their account across).
 STAGE_AWARD_WON = "07: Award Won / Contract signed"
 
