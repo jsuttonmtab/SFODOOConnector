@@ -27,14 +27,31 @@ Status key:
 | `Fax` | — | DROPPED | Not used at mTab (Finance, 2026-10-14). |
 | `Website` | `website` | OK | |
 | `Description` | `comment` | OK | Odoo field is HTML; plain text is escaped. |
-| `VAT_Number_Text__c` | `vat` | OK | Read-only SF formula over `VAT_Number__c` (textarea). Fine to read. Odoo validates VAT format per country if `base_vat` is installed, so malformed SF values may be rejected. |
+| `VAT_Number_Text__c` | `vat` | OK | Read-only SF formula over `VAT_Number__c` (textarea). Cleaned before writing, see *VAT handling* below. If Odoo rejects the VAT, the SF value is kept in `sf_vat_rejected`. |
 | `mTab_Billing_Entity__c` | `sf_default_billing_entity_id` | LOOKUP | Picklist: `mTab LLC` (US subsidiary), `G.A.M.M.A` (UK subsidiary, "Gamma"). Mapped to Odoo companies through connector config. See §4.1. |
 | `Account_Manager__r.Email` | `user_id` | LOOKUP | `res.users` by login/email. Unmatched → leave blank and log a warning. |
 | `CurrencyIsoCode` | `property_product_pricelist` | LOOKUP | Picklist: GBP, CNY, EUR, JPY, USD. Partners have no writable currency (`currency_id` is computed, read-only). Currency is carried by the pricelist; the connector uses one pricelist per currency. See §4.2. |
 | `Billing_Distribution_Method__c` | `sf_billing_distribution_method` | NEW | Free text in SF (string 100), not a picklist. Stored as Char. |
-| `ParentId` | `parent_id` | LOOKUP | Resolve by the parent's `sf_account_id`, not by name (names aren't unique). The parent must be synced first. |
+| `ParentId` | `sf_parent_account_id` | LOOKUP | **Not `parent_id`** (decided 2026-10-15). Odoo's `parent_id` copies the parent's address into contact children and pushes parent address changes down, which scrambled addresses and caused cross-record VAT errors. Resolve by the parent's `sf_account_id`, not by name (names aren't unique). Parents are synced as companies even without their own stage-07 opportunity: the connector walks the ParentId chain upwards. Parents that are test-mode, on the test-account list or missing in SF are not synced, and the link stays blank. Delivery-address children still use `parent_id` with `type = 'delivery'`. |
 | `BillingStreet` / `BillingCity` / `BillingState` / `BillingCountry` / `BillingPostalCode` | `street` / `city` / `state_id` / `country_id` / `zip` | OK + LOOKUP | SF state/country picklists are **not** enabled (no `BillingCountryCode`), so country and state are free text. Match with the rules in §4.1a. Unmatched → leave blank and log. Less critical than it looked: the invoice address comes from the opportunity, which has its own country (§2). |
 | `ShippingStreet` … `ShippingPostalCode` | child `res.partner` with `type = 'delivery'` | OK + LOOKUP | Odoo stores alternate addresses as child contacts. Created only when shipping differs from billing. Same free-text country caveat. |
+
+#### VAT handling (2026-10-15)
+
+Before writing, `VAT_Number_Text__c` is cleaned:
+
+1. The label before the first colon is removed (`NIP:`, `VAT:` and similar).
+2. Spaces, dots and hyphens are removed, and the result is upper-cased.
+3. If the value does not start with the billing country's ISO code, the code is added. Example: `NIP: 123.456.789` with Polish billing becomes `PL123456789`. A blank value writes no VAT.
+
+The same compact form is used when comparing with Odoo, so a VAT that only differs in spacing or label is not an update.
+
+**If Odoo rejects the VAT** (HTTP 422 mentioning VAT), the record is saved without VAT, and:
+
+- the Salesforce value is stored in `sf_vat_rejected` (readonly, Salesforce tab in Odoo);
+- a grouped "VAT rejected" warning is printed, with the SF value.
+
+On later runs, while the SF VAT still equals `sf_vat_rejected`, the connector does not write VAT again, and the record counts as unchanged if nothing else differs. Each run prints an info line with the number of such accounts. When the SF VAT changes, it is tried again. If Odoo accepts it, `sf_vat_rejected` is cleared.
 
 **Write-back to SFDC:** Odoo partner ID and record URL → new SF fields on
 Account. Celigo uses the same pattern today (`celigo_sfnsio__NetSuite_Id__c`,
@@ -66,7 +83,7 @@ the admin should create matching `Odoo_Id__c`, `Odoo_Record__c` (URL) and
 | `Additional_information_to_invoice__c` | `note` + `sf_invoice_additional_info` | OK (confirmed) | Goes in the Notes section of the invoice. Writing it to the SO `note` field makes Odoo copy it to the invoice notes automatically, so no report change is needed. Raw copy kept in `sf_invoice_additional_info`. |
 | `VAT_Tax_Number__c` | `sf_vat_number` | NEW | Inherited from the account in SF and (almost) never differs. Keep the NetSuite workflow: store it on the order. Odoo invoices use the customer's `vat`; the connector logs a warning if the two differ. |
 | `Billing_Distribution_Method__c` | `sf_billing_distribution_method` | NEW | Free text, same as Account. |
-| `Parent_Account__c` | — | OK (derived) | Lookup to Account. Already implied by `partner_id.parent_id`. Not stored. |
+| `Parent_Account__c` | — | OK (derived) | Lookup to Account. Already implied by `partner_id.sf_parent_account_id`. Not stored. |
 | `Billing_Street__c` / `Billing_City__c` / `Billing_State_Province__c` / `Billing_Zip_Postal_Code__c` / **`Billing_Country__c`** | `partner_invoice_id` | LOOKUP | Find-or-create a child partner `type = 'invoice'` under the customer with this address. **`Billing_Country__c` was missing from the requirements doc** but exists on the opportunity; it's the country used for invoicing. Matched with §4.1a. SF already has a formula (`Billing_Country_Formula__c`) normalising USA/U.S.A/UK, which confirms the same spelling problem. |
 | `Billing_Address__c` | — | — | Text duplicate of the fields above. |
 | `StageName` | `sf_stage` | NEW | Current SF stage, stored for visibility and for the reversal rule in §4.6. |
@@ -399,4 +416,6 @@ sf data query --query "SELECT ContentDocument.Title, ContentDocument.FileExtensi
 | 2026-10-14 | `Closed` = fully delivered; only stage 07 creates orders | Finance |
 | 2026-10-14 | Stage reversals handled in Odoo (flag + Finance activity), not by locking SF | Finance |
 | 2026-10-14 | On Hold: line stays listed and flagged; must reach DS immediately | CS |
+| 2026-10-15 | ParentId stored in `sf_parent_account_id`, not `parent_id`: Odoo's `parent_id` copies parent addresses into children and pushes changes down | Jason |
+| 2026-10-15 | VAT cleaned before write (label removed, spaces/dots/hyphens removed, upper case, ISO country prefix). A rejected VAT is saved without VAT, the SF value is kept in `sf_vat_rejected`, and it is not retried until the SF value changes | Jason |
 | 2026-10-14 | Deliverable holds are managed only from SF; clearing On Hold releases all of the line's undelivered deliverables | Jason |
