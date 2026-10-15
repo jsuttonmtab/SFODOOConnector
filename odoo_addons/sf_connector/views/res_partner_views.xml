@@ -13,6 +13,7 @@
                             <field name="sf_legal_entity_name" readonly="1"/>
                             <field name="sf_billing_distribution_method" readonly="1"/>
                             <field name="sf_default_billing_entity_id" readonly="1"/>
+                            <field name="sf_parent_account_id" readonly="1"/>
                         </group>
                     </group>
                 </page>

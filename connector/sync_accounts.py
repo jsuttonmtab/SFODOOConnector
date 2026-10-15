@@ -1,11 +1,14 @@
 """Sync Salesforce Accounts that have a stage-07 opportunity into Odoo customers (res.partner).
 
 Mapping: docs/field-mapping.md §1, §4.1, §4.1a, §4.3. Upsert key: res.partner.sf_account_id.
-Parent accounts (ParentId chain) are synced too, as companies, so parent_id links resolve.
+Parent accounts (ParentId chain) are synced too, as companies. The hierarchy is stored in
+sf_parent_account_id, not parent_id: Odoo copies a parent's address into contact children
+and pushes parent address changes down.
 Salesforce is read only. Nothing is written back.
 
-    python -m connector.sync_accounts --dry-run   # report what would change, write nothing
-    python -m connector.sync_accounts             # create and update in Odoo
+    python -m connector.sync_accounts --dry-run          # report what would change, write nothing
+    python -m connector.sync_accounts                    # create and update in Odoo
+    python -m connector.sync_accounts --purge-sandbox    # delete SF-synced partners (Sandbox DBs only)
 """
 import argparse
 import html
@@ -30,11 +33,12 @@ SF_FIELDS = [
 PARTNER_FIELDS = [
     "id", "sf_account_id", "name", "sf_legal_entity_name", "phone", "website", "comment", "vat",
     "sf_billing_distribution_method", "user_id", "property_product_pricelist",
-    "sf_default_billing_entity_id", "parent_id", "street", "city", "zip", "state_id", "country_id",
+    "sf_default_billing_entity_id", "parent_id", "sf_parent_account_id",
+    "street", "city", "zip", "state_id", "country_id",
 ]
 M2O_FIELDS = {
     "user_id", "property_product_pricelist", "sf_default_billing_entity_id",
-    "parent_id", "state_id", "country_id",
+    "parent_id", "sf_parent_account_id", "state_id", "country_id",
 }
 CHILD_FIELDS = ["id", "parent_id", "name", "street", "city", "zip", "state_id", "country_id"]
 
@@ -43,6 +47,8 @@ INVALID_EMAIL_SUFFIX = re.compile(r"\.invalid$", re.IGNORECASE)
 
 # Returned by parent_id() for a parent that only exists in this run's dry run.
 PENDING = object()
+
+PURGE_CHUNK = 100
 
 
 def soql_literal(value):
@@ -104,15 +110,56 @@ def comment_html(value):
     return "<br/>".join(html.escape(line) for line in value.splitlines())
 
 
+def vat_compact(value):
+    """Comparison form of a VAT: no 'NIP:'-style label, no spaces, dots or hyphens, upper case."""
+    if not value:
+        return False
+    s = re.sub(r"[\s.\-]", "", re.sub(r"^[^:]*:", "", str(value), count=1)).upper()
+    return s or False
+
+
+def vat_for_odoo(sf_value, country_code):
+    """VAT as written to Odoo: compact, with the ISO country prefix added if it is missing."""
+    s = vat_compact(sf_value)
+    if not s:
+        return False
+    if country_code and not s.startswith(country_code):
+        s = country_code + s
+    return s
+
+
+def website_key(value):
+    """Website without the http:// or https:// scheme and without a trailing slash."""
+    if not value:
+        return False
+    s = re.sub(r"^https?://", "", str(value).strip(), flags=re.IGNORECASE).rstrip("/")
+    return s or False
+
+
+def plain_text(value):
+    """Odoo html field as plain text, whitespace collapsed, so it can be compared to plain text."""
+    if not value:
+        return False
+    s = re.sub(r"<br\s*/?>", "\n", str(value), flags=re.IGNORECASE)
+    s = html.unescape(re.sub(r"<[^>]+>", "", s))
+    return " ".join(s.split()) or False
+
+
+# Applied to both sides of a comparison. Fields not listed compare exactly.
+NORMALIZERS = {"vat": vat_compact, "website": website_key, "comment": plain_text}
+
+
 def diff(record, vals):
-    """List of (field, current, wanted) for fields whose values differ."""
+    """List of (field, current, wanted) for fields whose values differ after normalising."""
     changes = []
     for field, wanted in vals.items():
         if field in M2O_FIELDS:
             current = m2o_id(record.get(field))
         else:
             current = record.get(field) or False
-        if current != wanted:
+        norm = NORMALIZERS.get(field)
+        same = norm(current) == norm(wanted) if norm else current == wanted
+        if not same:
             changes.append((field, current, wanted))
     return changes
 
@@ -126,6 +173,10 @@ def show(value):
 def address_key(acc, prefix):
     return tuple(str(acc.get(f"{prefix}{f}") or "").strip().lower()
                  for f in ("Street", "City", "State", "PostalCode", "Country"))
+
+
+def is_vat_rejection(err):
+    return err.status == 422 and "vat" in str(err).lower()
 
 
 class AccountSync:
@@ -243,6 +294,19 @@ class AccountSync:
             for example in examples[:3]:
                 print(f"           e.g. {example}")
 
+    # ----- writes -----
+
+    def odoo_save(self, acc, vals, call):
+        """Run call(vals). If Odoo rejects the VAT, retry without it and warn with the SF value."""
+        try:
+            return call(vals)
+        except OdooError as err:
+            if "vat" not in vals or not is_vat_rejection(err):
+                raise
+            self.warn("VAT rejected", repr(acc.get("VAT_Number_Text__c")), acc)
+            rest = {k: v for k, v in vals.items() if k != "vat"}
+            return call(rest) if rest else None
+
     # ----- field mapping -----
 
     def user_id(self, acc):
@@ -303,25 +367,27 @@ class AccountSync:
         }, country_id
 
     def billing_vals(self, acc):
+        address, country_id = self.address(acc, "Billing")
+        if not country_id:
+            self.warn("no billing country (left blank, 4.1a)", "", acc)
         vals = {
             "name": acc["Name"],
             "sf_legal_entity_name": text(acc.get("Legal_Entity_Name__c")),
             "phone": text(acc.get("Phone")),
             "website": text(acc.get("Website")),
             "comment": comment_html(acc.get("Description")),
-            "vat": text(acc.get("VAT_Number_Text__c")),
+            "vat": vat_for_odoo(acc.get("VAT_Number_Text__c"), self.addr.code_by_id.get(country_id)),
             "sf_billing_distribution_method": text(acc.get("Billing_Distribution_Method__c")),
             "user_id": self.user_id(acc),
             "property_product_pricelist": self.pricelist_id(acc),
             "sf_default_billing_entity_id": self.billing_entity_id(acc),
+            # The SF hierarchy is kept in sf_parent_account_id. Clears parent_id set by earlier runs.
+            "parent_id": False,
         }
-        address, country_id = self.address(acc, "Billing")
         vals.update(address)
-        if not country_id:
-            self.warn("no billing country (left blank, 4.1a)", "", acc)
         return vals
 
-    def parent_id(self, acc, odoo_ids, batch):
+    def parent_value(self, acc, odoo_ids, batch):
         parent_sf = acc.get("ParentId")
         if not parent_sf:
             return False
@@ -363,28 +429,30 @@ class AccountSync:
                     detail = ", ".join(f"{f}: {show(c)} -> {show(w)}" for f, c, w in changes)
                     self.report("update", acc, detail)
                     if not self.dry_run:
-                        self.odoo.write("res.partner", [rec["id"]], {f: w for f, _, w in changes})
+                        write_vals = {f: w for f, _, w in changes}
+                        self.odoo_save(acc, write_vals,
+                                       lambda v, pid=rec["id"]: self.odoo.write("res.partner", [pid], v))
                     self.counts["updated"] += 1
                 else:
                     country = "country set" if vals["country_id"] else "no country"
                     self.report("create", acc, f"{show(vals['city'])}, {country}")
                     if not self.dry_run:
-                        new_id = self.odoo.create(
-                            "res.partner", [{**vals, "is_company": True, "sf_account_id": sf_id}]
-                        )[0]
+                        create_vals = {**vals, "is_company": True, "sf_account_id": sf_id}
+                        new_id = self.odoo_save(
+                            acc, create_vals, lambda v: self.odoo.create("res.partner", [v])[0])
                         odoo_ids[sf_id] = new_id
                     self.counts["created"] += 1
                 synced.add(sf_id)
             except OdooError as err:
                 self.error(acc, err)
 
-        # Pass 2: link parents now that every account in this batch has an id.
+        # Pass 2: record the SF parent in sf_parent_account_id, now that every account has an id.
         for acc in all_accounts:
             sf_id = acc["Id"]
             if sf_id not in synced or (odoo_ids.get(sf_id) is None and not self.dry_run):
                 continue
             try:
-                parent = self.parent_id(acc, odoo_ids, batch)
+                parent = self.parent_value(acc, odoo_ids, batch)
                 if parent is None:
                     self.warn("parent not synced: test-mode, excluded, or not in Salesforce (link left blank)",
                               acc.get("ParentId", ""), acc)
@@ -393,12 +461,12 @@ class AccountSync:
                     self.report("link parent", acc, "parent is created in this run")
                     continue
                 rec = self.existing.get(sf_id)
-                current = m2o_id(rec["parent_id"]) if rec else False
+                current = m2o_id(rec.get("sf_parent_account_id")) if rec else False
                 if parent == current:
                     continue
-                self.report("set parent", acc, f"parent_id: {show(current)} -> {show(parent)}")
+                self.report("set parent account", acc, f"sf_parent_account_id: {show(current)} -> {show(parent)}")
                 if not self.dry_run:
-                    self.odoo.write("res.partner", [odoo_ids[sf_id]], {"parent_id": parent})
+                    self.odoo.write("res.partner", [odoo_ids[sf_id]], {"sf_parent_account_id": parent})
                 self.counts["parents_set"] += 1
             except OdooError as err:
                 self.error(acc, err)
@@ -444,17 +512,66 @@ class AccountSync:
         mode = "dry run, nothing written" if self.dry_run else "written to Odoo"
         print(
             f"\nDone ({mode}): created {c['created']}, updated {c['updated']}, "
-            f"unchanged {c['unchanged']}, parents set {c['parents_set']}, "
+            f"unchanged {c['unchanged']}, parent accounts set {c['parents_set']}, "
             f"delivery addresses created {c['delivery_created']} / updated {c['delivery_updated']}, "
             f"pricelists created {c['pricelists_created']}, errors {c['errors']}"
         )
+
+
+def purge_sandbox(odoo, dry_run):
+    """Delete every partner with sf_account_id and its delivery-address children."""
+    parents = odoo.search_read(
+        "res.partner", [("sf_account_id", "!=", False), ("active", "in", [True, False])], ["id", "name"])
+    parent_ids = [p["id"] for p in parents]
+    children = []
+    if parent_ids:
+        children = odoo.search_read(
+            "res.partner",
+            [("type", "=", "delivery"), ("parent_id", "in", parent_ids), ("active", "in", [True, False])],
+            ["id", "name"],
+        )
+    print(f"{len(parents)} partners with sf_account_id, {len(children)} delivery-address children")
+    for p in parents[:5]:
+        print(f"  e.g. {p['name']}")
+    if dry_run:
+        print("[dry-run] nothing deleted")
+        return 0
+
+    # Children first, so no partner is deleted while it still has children.
+    ids = [c["id"] for c in children] + parent_ids
+    deleted = 0
+    try:
+        for i in range(0, len(ids), PURGE_CHUNK):
+            chunk = ids[i:i + PURGE_CHUNK]
+            odoo.unlink("res.partner", chunk)
+            deleted += len(chunk)
+    except OdooError as err:
+        print(f"ERROR purge stopped after {deleted} of {len(ids)} records: {err}")
+        print("Partners with sales orders or invoices cannot be deleted; purge them in Odoo first.")
+        return 1
+    print(f"deleted {deleted} partners")
+    return 0
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Sync Salesforce Accounts to Odoo customers.")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would change; write nothing to Odoo")
+    parser.add_argument("--purge-sandbox", action="store_true",
+                        help="delete all SF-synced partners and their delivery addresses; "
+                             "refused unless ODOO_DB contains 'Sandbox'")
     args = parser.parse_args(argv)
+
+    if args.purge_sandbox and "Sandbox" not in config.ODOO_DB:
+        print(f"REFUSED: --purge-sandbox needs an ODOO_DB containing 'Sandbox' (ODOO_DB is {config.ODOO_DB!r})")
+        return 1
+
+    if args.purge_sandbox:
+        try:
+            return purge_sandbox(OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY), args.dry_run)
+        except OdooError as err:
+            print(f"ERROR {err}")
+            return 1
 
     try:
         odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY)

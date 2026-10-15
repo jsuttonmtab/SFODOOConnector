@@ -31,10 +31,12 @@ class AddressMatcher:
         """countries: rows with id, name, code. states: rows with id, name, code, country_id."""
         self.country_by_name = {}
         self.country_by_code = {}
+        self.code_by_id = {}
         for country in countries:
             self.country_by_name.setdefault(country["name"].lower(), country["id"])
             if country["code"]:
                 self.country_by_code.setdefault(country["code"].lower(), country["id"])
+                self.code_by_id[country["id"]] = country["code"].upper()
 
         self.state_by_name = {}
         self.state_by_code = {}

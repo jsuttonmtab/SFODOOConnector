@@ -9,7 +9,9 @@ import urllib.request
 
 
 class OdooError(Exception):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 def m2o_id(value):
@@ -57,6 +59,9 @@ class OdooClient:
     def write(self, model, ids, vals):
         return self.call(model, "write", ids=ids, vals=vals)
 
+    def unlink(self, model, ids):
+        return self.call(model, "unlink", ids=ids)
+
     @staticmethod
     def _http_error(err):
         body = err.read().decode("utf-8", "replace")
@@ -64,4 +69,4 @@ class OdooClient:
             message = json.loads(body).get("message") or body
         except (ValueError, AttributeError):
             message = body
-        return OdooError(f"HTTP {err.code} from Odoo: {str(message)[:500]}")
+        return OdooError(f"HTTP {err.code} from Odoo: {str(message)[:500]}", status=err.code)

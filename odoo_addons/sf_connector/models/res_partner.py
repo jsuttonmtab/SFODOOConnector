@@ -24,6 +24,17 @@ class ResPartner(models.Model):
         help='Billing entity from Salesforce mTab_Billing_Entity__c. '
              'Sets the default company on new orders for this customer.',
     )
+    # Not parent_id: Odoo copies a parent's address into contact children and
+    # pushes parent address changes down, so the SF hierarchy lives here instead.
+    sf_parent_account_id = fields.Many2one(
+        'res.partner',
+        string='Salesforce Parent Account',
+        readonly=True,
+        index=True,
+        copy=False,
+        ondelete='set null',
+        help='Parent account from Salesforce ParentId. Informational only; does not change the address.',
+    )
 
     _sf_account_id_unique = models.Constraint(
         'UNIQUE(sf_account_id)',
