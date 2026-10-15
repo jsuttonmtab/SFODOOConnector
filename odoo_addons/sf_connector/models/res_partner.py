@@ -24,6 +24,14 @@ class ResPartner(models.Model):
         help='Billing entity from Salesforce mTab_Billing_Entity__c. '
              'Sets the default company on new orders for this customer.',
     )
+    # Set when Odoo rejects the VAT. Holds the Salesforce value that was rejected,
+    # so the connector does not retry it until Salesforce changes.
+    sf_vat_rejected = fields.Char(
+        string='Rejected VAT (Salesforce)',
+        readonly=True,
+        copy=False,
+        help='Salesforce VAT value that Odoo rejected. Cleared when a VAT is accepted.',
+    )
     # Not parent_id: Odoo copies a parent's address into contact children and
     # pushes parent address changes down, so the SF hierarchy lives here instead.
     sf_parent_account_id = fields.Many2one(

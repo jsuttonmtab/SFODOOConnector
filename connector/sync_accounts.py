@@ -33,7 +33,7 @@ SF_FIELDS = [
 PARTNER_FIELDS = [
     "id", "sf_account_id", "name", "sf_legal_entity_name", "phone", "website", "comment", "vat",
     "sf_billing_distribution_method", "user_id", "property_product_pricelist",
-    "sf_default_billing_entity_id", "parent_id", "sf_parent_account_id",
+    "sf_default_billing_entity_id", "parent_id", "sf_parent_account_id", "sf_vat_rejected",
     "street", "city", "zip", "state_id", "country_id",
 ]
 M2O_FIELDS = {
@@ -297,15 +297,18 @@ class AccountSync:
     # ----- writes -----
 
     def odoo_save(self, acc, vals, call):
-        """Run call(vals). If Odoo rejects the VAT, retry without it and warn with the SF value."""
+        """Run call(vals). If Odoo rejects the VAT, save without it, store the SF value
+        in sf_vat_rejected and warn. Later runs skip the VAT while the SF value is unchanged."""
         try:
             return call(vals)
         except OdooError as err:
             if "vat" not in vals or not is_vat_rejection(err):
                 raise
-            self.warn("VAT rejected", repr(acc.get("VAT_Number_Text__c")), acc)
+            raw = text(acc.get("VAT_Number_Text__c"))
+            self.warn("VAT rejected", repr(raw), acc)
             rest = {k: v for k, v in vals.items() if k != "vat"}
-            return call(rest) if rest else None
+            rest["sf_vat_rejected"] = raw
+            return call(rest)
 
     # ----- field mapping -----
 
@@ -421,6 +424,14 @@ class AccountSync:
                 vals = self.billing_vals(acc)
                 rec = self.existing.get(sf_id)
                 if rec:
+                    raw_vat = text(acc.get("VAT_Number_Text__c"))
+                    rejected = rec.get("sf_vat_rejected") or False
+                    if rejected and raw_vat == rejected:
+                        # Odoo rejected this exact VAT before: do not retry it.
+                        vals.pop("vat", None)
+                    elif rejected:
+                        # SF VAT changed: try it. The marker clears if Odoo accepts it.
+                        vals["sf_vat_rejected"] = False
                     changes = diff(rec, vals)
                     if not changes:
                         self.counts["unchanged"] += 1

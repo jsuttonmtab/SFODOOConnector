@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Salesforce Connector Fields',
-    'version': '19.0.1.4.0',
+    'version': '19.0.1.5.0',
     'summary': 'Salesforce ID and mapped fields for customers, orders and order lines',
     'description': """
 Adds the sf_* fields used by the Salesforce -> Odoo connector.
