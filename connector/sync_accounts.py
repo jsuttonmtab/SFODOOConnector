@@ -429,6 +429,7 @@ class AccountSync:
                     if rejected and raw_vat == rejected:
                         # Odoo rejected this exact VAT before: do not retry it.
                         vals.pop("vat", None)
+                        self.counts["vat_rejected_known"] += 1
                     elif rejected:
                         # SF VAT changed: try it. The marker clears if Odoo accepts it.
                         vals["sf_vat_rejected"] = False
@@ -518,8 +519,9 @@ class AccountSync:
             self.counts["delivery_created"] += 1
 
     def summary(self):
-        self.print_warnings()
         c = self.counts
+        print(f"\nInfo: {c['vat_rejected_known']} accounts with a previously rejected VAT (see sf_vat_rejected)")
+        self.print_warnings()
         mode = "dry run, nothing written" if self.dry_run else "written to Odoo"
         print(
             f"\nDone ({mode}): created {c['created']}, updated {c['updated']}, "
