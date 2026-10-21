@@ -222,7 +222,7 @@ class OrderSync(AccountSync):
         }
         if not text(opp.get("CurrencyIsoCode")):
             problems["pricelist_id"] = "no currency"
-        vals["pricelist_id"] = self.pricelist_id(opp)
+        vals["pricelist_id"] = self.pricelist_for(text(opp.get("CurrencyIsoCode")), vals.get("company_id") or None)
         if partner_id is PENDING_PARTNER:
             pass  # dry run: the customer is created by the account sync in this run
         elif partner_id:
@@ -251,7 +251,7 @@ class OrderSync(AccountSync):
         self.load_terms()
         self.load_partners()
         self.load_invoice_addresses()
-        self.prepare_pricelists(opps)
+        self.check_currencies(opps)
 
         seen = set()
         for opp in opps:

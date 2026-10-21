@@ -185,7 +185,6 @@ class AccountSync:
         self.dry_run = dry_run
         self.counts = Counter()
         self.warnings = defaultdict(list)  # kind -> ["<account>: <detail>", ...]
-        self.pricelist_pending = set()     # currencies whose pricelist would be created (dry run)
         self.parent_ids = set()
 
     # ----- reference data -----
@@ -219,33 +218,17 @@ class AccountSync:
         for candidates in self.pricelists.values():
             candidates.sort(key=lambda p: (bool(m2o_id(p["company_id"])), p["id"]))
 
-    def prepare_pricelists(self, accounts):
-        """Make sure every currency used has a pricelist. Creates 'SF <CUR>' when missing.
-
-        Raises before any write if a currency is missing or inactive, so the run stops early.
-        """
-        codes = {text(acc.get("CurrencyIsoCode")) for acc in accounts} - {False}
+    def check_currencies(self, records):
+        """Stop before any write if a currency in use is missing or inactive in Odoo."""
+        codes = {text(rec.get("CurrencyIsoCode")) for rec in records} - {False}
         for code in sorted(codes):
-            if self.pricelists.get(code):
-                continue
             currency = self.currencies.get(code)
             if not currency:
-                raise OdooError(f"currency {code} does not exist in Odoo; cannot sync accounts in {code}")
+                raise OdooError(f"currency {code} does not exist in Odoo; cannot sync records in {code}")
             if not currency["active"]:
                 raise OdooError(
-                    f"currency {code} is inactive in Odoo; activate it, then rerun (no accounts were written)"
+                    f"currency {code} is inactive in Odoo; activate it, then rerun (no records were written)"
                 )
-            name = f"SF {code}"
-            if self.dry_run:
-                self.pricelist_pending.add(code)
-                print(f"[dry-run] would create pricelist {name} (shared, {code})")
-                continue
-            new_id = self.odoo.create(
-                "product.pricelist", [{"name": name, "currency_id": currency["id"], "company_id": False}]
-            )[0]
-            self.pricelists[code] = [{"id": new_id, "company_id": False}]
-            print(f"created pricelist {name} (id {new_id}, shared, {code})")
-            self.counts["pricelists_created"] += 1
 
     def load_existing(self):
         """Partners that already carry an sf_account_id, and their delivery children."""
@@ -322,17 +305,40 @@ class AccountSync:
             self.warn("no Odoo user for account manager (user left blank)", email, acc)
         return user or False
 
-    def pricelist_id(self, acc):
-        code = text(acc.get("CurrencyIsoCode"))
+    def pricelist_for(self, code, company_id=None):
+        """Pricelist for a currency. Usable: company empty, or the order's company.
+
+        Preference: the order's company, then shared. If none exists, create a shared
+        "SF <CUR>" pricelist. Dry run returns a placeholder instead of creating it.
+        """
         if not code:
             return False
-        if code in self.pricelist_pending:
-            return f"new pricelist SF {code}"
-        candidates = self.pricelists[code]
+
+        def rank(p):
+            pc = m2o_id(p["company_id"])
+            return 0 if pc and pc == company_id else 1
+
+        candidates = [p for p in self.pricelists.get(code, [])
+                      if not m2o_id(p["company_id"]) or m2o_id(p["company_id"]) == company_id]
+        if not candidates:
+            if self.dry_run:
+                return f"new pricelist SF {code}"
+            name = f"SF {code}"
+            new_id = self.odoo.create(
+                "product.pricelist", [{"name": name, "currency_id": self.currencies[code]["id"], "company_id": False}]
+            )[0]
+            self.pricelists.setdefault(code, []).append({"id": new_id, "company_id": False})
+            print(f"created pricelist {name} (id {new_id}, shared, {code})")
+            self.counts["pricelists_created"] += 1
+            return new_id
+        candidates.sort(key=lambda p: (rank(p), p["id"]))
         if len(candidates) > 1:
             self.warn("multiple pricelists for a currency (lowest id used)",
-                      f"{code}: {len(candidates)} candidates", acc)
+                      f"{code}: {len(candidates)} usable", None)
         return candidates[0]["id"]
+
+    def pricelist_id(self, acc):
+        return self.pricelist_for(text(acc.get("CurrencyIsoCode")))
 
     def billing_entity_id(self, acc):
         raw = text(acc.get("mTab_Billing_Entity__c"))
@@ -410,7 +416,7 @@ class AccountSync:
         all_accounts = list(accounts) + list(parents)
         self.parent_ids = {p["Id"] for p in parents}
         self.load_reference()
-        self.prepare_pricelists(all_accounts)
+        self.check_currencies(all_accounts)
         self.load_existing()
 
         batch = {acc["Id"] for acc in all_accounts}
