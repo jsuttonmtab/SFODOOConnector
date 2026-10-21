@@ -15,6 +15,7 @@ from datetime import date
 from . import config
 from .odoo_client import OdooClient, OdooError, m2o_id
 from .sf_client import SalesforceClient, SalesforceError, get_session
+from .sync_lines import LineSync, fetch_sf_lines
 from .sync_accounts import (
     INVALID_EMAIL_SUFFIX, PENDING, AccountSync, build_parent_soql, comment_html,
     diff, fetch_parent_chain, plain_text, show, soql_literal, text,
@@ -85,6 +86,8 @@ class OrderSync(AccountSync):
     def __init__(self, odoo, dry_run):
         super().__init__(odoo, dry_run)
         self.counts = Counter()
+        self.sf_lines = {}  # opportunity Id -> OpportunityLineItems
+        self.lines = None
 
     # ----- reference data -----
 
@@ -248,6 +251,8 @@ class OrderSync(AccountSync):
     # ----- run -----
 
     def run(self, opps):
+        self.lines = LineSync(self)
+        self.lines.load()
         self.load_terms()
         self.load_partners()
         self.load_invoice_addresses()
@@ -276,6 +281,17 @@ class OrderSync(AccountSync):
         self.summary()
 
     def create_or_update(self, opp, existing):
+        sf_lines = self.sf_lines.get(opp["Id"], [])
+        if existing and self.lines.blocked(existing["id"], {line["Id"] for line in sf_lines}):
+            self.order_error(opp, "a delivered line was removed in Salesforce; order not changed (§4.4)")
+            return
+        ok, order_id = self.sync_header(opp, existing)
+        if ok:
+            self.lines.sync(opp, order_id, sf_lines)
+
+    def sync_header(self, opp, existing):
+        """Create or update the order header. Returns (ok, order_id). order_id is None for a
+        new order in a dry run. When ok is False, the order's lines are not synced."""
         account_id = text(opp.get("AccountId"))
         partner_id = self.partners.get(account_id) if account_id else None
         if not partner_id and self.dry_run:
@@ -285,17 +301,18 @@ class OrderSync(AccountSync):
         if existing is None:
             if problems:
                 self.order_error(opp, "not created: " + "; ".join(problems.values()))
-                return
+                return False, None
             vals["state"] = "draft"
             vals["sf_opportunity_id"] = opp["Id"]
             if vals.get("sf_award_won_date"):
                 vals["date_order"] = f"{vals['sf_award_won_date']} 00:00:00"
             customer = "created in this run" if partner_id is PENDING_PARTNER else show(vals.get("partner_id"))
             self.report_order("create", opp, f"customer {customer}")
+            order_id = None
             if not self.dry_run:
-                self.odoo.create("sale.order", [vals])
+                order_id = self.odoo.create("sale.order", [vals])[0]
             self.counts["created"] += 1
-            return
+            return True, order_id
 
         # Locked header fields (§4.4): report and do not apply.
         for field in LOCKED:
@@ -311,12 +328,13 @@ class OrderSync(AccountSync):
         changes = diff(existing, vals, ORDER_M2O)
         if not changes:
             self.counts["unchanged"] += 1
-            return
+            return True, existing["id"]
         detail = ", ".join(f"{f}: {show(c)} -> {show(w)}" for f, c, w in changes)
         self.report_order("update", opp, detail)
         if not self.dry_run:
             self.odoo.write("sale.order", [existing["id"]], {f: w for f, _, w in changes})
         self.counts["updated"] += 1
+        return True, existing["id"]
 
     def stage_reversal(self, opp, existing):
         """§4.6: the opportunity left Award Won. Do not change the order. Post a note, add a To Do
@@ -401,6 +419,9 @@ class OrderSync(AccountSync):
             f"\nDone ({mode}): created {c['created']}, updated {c['updated']}, unchanged {c['unchanged']}, "
             f"stage reversals {c['stage_reversals']} (notes {c['notes_posted']}, To Dos {c['activities_created']}, "
             f"already open {c['activities_already_open']}), "
+            f"lines created {c['lines_created']}, updated {c['lines_updated']}, "
+            f"unchanged {c['lines_unchanged']}, removed {c['lines_removed']}, "
+            f"products created {c['products_created']}, "
             f"invoice addresses created {c['invoice_addresses_created']}, "
             f"pricelists created {c['pricelists_created']}, errors {c['errors']}"
         )
@@ -424,6 +445,7 @@ def main(argv=None):
 
         qualifying = sf.query(build_opp_soql(f"StageName IN {stage_list_soql()}"))
         qualifying_ids = {o["Id"] for o in qualifying}
+        line_opp_ids = [o["Id"] for o in qualifying if o["StageName"] == STAGE_AWARD_WON or o["Id"] in sync.orders]
         # Orders already in Odoo whose opportunity has left stage 07 / Closed (§4.6).
         reversal_ids = [sid for sid in sync.orders if sid not in qualifying_ids]
         reversals = query_opps_by_id(sf, reversal_ids) if reversal_ids else []
@@ -442,6 +464,7 @@ def main(argv=None):
             AccountSync(odoo, args.dry_run).run(accounts, parents)
             sync.load_partners()
 
+        sync.sf_lines = fetch_sf_lines(sf, line_opp_ids)
         print(f"{len(qualifying)} opportunities at stage {STAGE_AWARD_WON!r} or Closed, "
               f"{len(reversals)} existing orders whose opportunity left them")
     except (OdooError, SalesforceError) as err:

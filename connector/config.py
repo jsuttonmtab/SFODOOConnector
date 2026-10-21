@@ -34,6 +34,9 @@ SF_TARGET_ORG = os.environ.get("SF_TARGET_ORG", "mtab-sandbox")
 # §4.6: login of the Odoo user who gets the To Do when a synced opportunity leaves Award Won.
 FINANCE_ACTIVITY_USER = os.environ.get("FINANCE_ACTIVITY_USER", "").strip()
 
+# §3: create a service product for a Salesforce product with no Odoo match (default off).
+AUTO_CREATE_PRODUCTS = os.environ.get("AUTO_CREATE_PRODUCTS", "false").strip().lower() in ("1", "true", "yes")
+
 # §4.3: only opportunities at this stage create orders (and so bring their account across).
 STAGE_AWARD_WON = "07: Award Won / Contract signed"
 
