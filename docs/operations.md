@@ -59,6 +59,7 @@ ODOO_DB=OdooSandbox19
 ODOO_API_KEY=<API key of the integration user in Odoo>
 SF_TARGET_ORG=mtab-sandbox
 FINANCE_ACTIVITY_USER=<Odoo login of the Finance user>
+DELIVERABLES_PROJECT=DS deliverables
 ODOO_API_LOGIN=<Odoo login the API key belongs to; optional, used only for a warning>
 AUTO_CREATE_PRODUCTS=false
 ```
@@ -66,6 +67,7 @@ AUTO_CREATE_PRODUCTS=false
 - The API key comes from Odoo under Preferences → Account Security → New API Key, for the
   integration user. Don't use a personal user's key.
 - Keep the file readable by `sfsync` only: `chmod 600 connector/.env`.
+- `DELIVERABLES_PROJECT` (default `DS deliverables`) is the exact name of the active, billable Odoo project that connector-managed orders are set to. It must exist in Odoo, or the sync logs one warning and skips setting projects.
 - `AUTO_CREATE_PRODUCTS=true` creates new service products in Odoo for Salesforce products
   with no match. Set it deliberately.
 

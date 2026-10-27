@@ -37,6 +37,10 @@ SF_TARGET_ORG = os.environ.get("SF_TARGET_ORG", "mtab-sandbox")
 # §4.6: login of the Odoo user who gets the To Do when a synced opportunity leaves Award Won.
 FINANCE_ACTIVITY_USER = os.environ.get("FINANCE_ACTIVITY_USER", "").strip()
 
+# Project set on the orders the connector manages, so the Delivery Tracker lists their deliverables.
+# Set only when the order has no project yet. Must be an active, billable project.
+DELIVERABLES_PROJECT = os.environ.get("DELIVERABLES_PROJECT", "DS deliverables").strip()
+
 # §3: create a service product for a Salesforce product with no Odoo match (default off).
 AUTO_CREATE_PRODUCTS = os.environ.get("AUTO_CREATE_PRODUCTS", "false").strip().lower() in ("1", "true", "yes")
 

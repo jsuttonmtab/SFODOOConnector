@@ -112,6 +112,7 @@ class LineSync:
                 "default_code": code or False,
                 "sale_ok": True,
                 "type": "service",
+                "service_tracking": "no",  # never create tasks or projects from these products
                 "taxes_id": [(6, 0, [])],
             }])[0]
             if code:

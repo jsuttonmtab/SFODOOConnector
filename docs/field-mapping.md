@@ -87,6 +87,7 @@ the admin should create matching `Odoo_Id__c`, `Odoo_Record__c` (URL) and
 | `Billing_Street__c` / `Billing_City__c` / `Billing_State_Province__c` / `Billing_Zip_Postal_Code__c` / **`Billing_Country__c`** | `partner_invoice_id` | LOOKUP | Find-or-create a child partner `type = 'invoice'` under the customer with this address. **`Billing_Country__c` was missing from the requirements doc** but exists on the opportunity; it's the country used for invoicing. Matched with §4.1a. SF already has a formula (`Billing_Country_Formula__c`) normalising USA/U.S.A/UK, which confirms the same spelling problem. |
 | `Billing_Address__c` | — | — | Text duplicate of the fields above. |
 | `StageName` | `sf_stage` | NEW | Current SF stage, stored for visibility and for the reversal rule in §4.6. |
+| (none: Odoo) | `project_id` | SET | Set to the `DS deliverables` project (`DELIVERABLES_PROJECT`) so the mTab Delivery Tracker lists the order's deliverables (it filters on project name). Set on create. On update, set only when the order has no project, so a project chosen by hand is never overwritten; this also backfills existing orders. Allowed on confirmed orders. The project must be active and billable. An order whose company differs from the project's company is left without a project and warned. |
 
 **Status on create:** `state = 'draft'` (Quotation). Finance clicks *Confirm* to
 move it to `sale`, which releases it to the deliverables app. Agreed by Finance
@@ -428,4 +429,5 @@ sf data query --query "SELECT ContentDocument.Title, ContentDocument.FileExtensi
 | 2026-10-14 | On Hold: line stays listed and flagged; must reach DS immediately | CS |
 | 2026-10-15 | ParentId stored in `sf_parent_account_id`, not `parent_id`: Odoo's `parent_id` copies parent addresses into children and pushes changes down | Jason |
 | 2026-10-15 | VAT cleaned before write (label removed, spaces/dots/hyphens removed, upper case, ISO country prefix). A rejected VAT is saved without VAT, the SF value is kept in `sf_vat_rejected`, and it is not retried until the SF value changes | Jason |
+| 2026-10-27 | Connector-managed sale orders are set to the `DS deliverables` project so CS can see their deliverables in the Delivery Tracker. Set on create and backfilled once where empty; never overwritten. Service products created by the connector have `service_tracking = 'no'`, so the project does not create tasks | Jason |
 | 2026-10-14 | Deliverable holds are managed only from SF; clearing On Hold releases all of the line's undelivered deliverables | Jason |

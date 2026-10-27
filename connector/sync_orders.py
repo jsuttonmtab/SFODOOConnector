@@ -42,10 +42,10 @@ ORDER_FIELDS = [
     "user_id", "partner_invoice_id", "origin", "client_order_ref", "note", "sf_award_won_date",
     "sf_term_start_date", "sf_opportunity_type", "sf_description", "sf_invoice_notes",
     "sf_invoice_additional_info", "sf_billing_distribution_method", "sf_vat_number",
-    "sf_revenue_allocation_company_id",
+    "sf_revenue_allocation_company_id", "project_id",
 ]
 ORDER_M2O = {"partner_id", "company_id", "pricelist_id", "payment_term_id", "user_id",
-             "partner_invoice_id", "sf_revenue_allocation_company_id"}
+             "partner_invoice_id", "sf_revenue_allocation_company_id", "project_id"}
 # §4.4 header fields: once the order exists, changes are errors and are not applied.
 LOCKED = ("partner_id", "company_id", "pricelist_id", "sf_award_won_date")
 
@@ -306,8 +306,12 @@ class OrderSync(AccountSync):
             vals["sf_opportunity_id"] = opp["Id"]
             if vals.get("sf_award_won_date"):
                 vals["date_order"] = f"{vals['sf_award_won_date']} 00:00:00"
+            project_id = self.project_for_order(m2o_id(vals.get("company_id")), opp)
+            if project_id:
+                vals["project_id"] = project_id
             customer = "created in this run" if partner_id is PENDING_PARTNER else show(vals.get("partner_id"))
-            self.report_order("create", opp, f"customer {customer}")
+            detail = f"customer {customer}" + (", project set" if project_id else "")
+            self.report_order("create", opp, detail)
             order_id = None
             if not self.dry_run:
                 order_id = self.odoo.create("sale.order", [vals])[0]
@@ -325,6 +329,14 @@ class OrderSync(AccountSync):
         for problem in problems.values():
             self.order_error(opp, f"not applied: {problem}")
 
+        # Project: set only when the order has none, so a project chosen by hand is kept.
+        if existing.get("project_id"):
+            self.counts["projects_already_set"] += 1
+        else:
+            project_id = self.project_for_order(m2o_id(existing.get("company_id")), opp)
+            if project_id:
+                vals["project_id"] = project_id
+
         changes = diff(existing, vals, ORDER_M2O)
         if not changes:
             self.counts["unchanged"] += 1
@@ -335,6 +347,49 @@ class OrderSync(AccountSync):
             self.odoo.write("sale.order", [existing["id"]], {f: w for f, _, w in changes})
         self.counts["updated"] += 1
         return True, existing["id"]
+
+    def resolve_project(self):
+        """DELIVERABLES_PROJECT as an active, billable project: (id, company id or None), or None.
+        Resolved once per run. A problem is logged once, and project changes are skipped."""
+        if hasattr(self, "_project"):
+            return self._project
+        self._project = None
+        name = config.DELIVERABLES_PROJECT
+        if not name:
+            self.warn("DELIVERABLES_PROJECT is empty; orders' project not set", "")
+            return None
+        rows = self.odoo.search_read("project.project", [("name", "=", name), ("active", "in", [True, False])],
+                                     ["id", "active", "allow_billable", "company_id"])
+        if not rows:
+            self.warn("DELIVERABLES_PROJECT not found in Odoo; orders' project not set", name)
+            return None
+        active = sorted((r for r in rows if r["active"]), key=lambda r: r["id"])
+        if not active:
+            self.warn("DELIVERABLES_PROJECT is archived; orders' project not set", name)
+            return None
+        if len(active) > 1:
+            self.warn("several active projects have this name; lowest id used", f"{name}: {len(active)}")
+        project = active[0]
+        if not project["allow_billable"]:
+            self.warn("DELIVERABLES_PROJECT is not billable; orders' project not set", name)
+            return None
+        self._project = {"id": project["id"], "company": m2o_id(project["company_id"])}
+        return self._project
+
+    def project_for_order(self, company_id, opp):
+        """Project id to set on an order, or None (skipped, and counted). A project that belongs to
+        another company is not set, so the order does not cause a multi-company error."""
+        project = self.resolve_project()
+        if not project:
+            self.counts["projects_skipped"] += 1
+            return None
+        if project["company"] and project["company"] != company_id:
+            self.warn("deliverables project belongs to another company; project not set on this order",
+                      f"project company {project['company']}, order company {company_id or '-'}", opp)
+            self.counts["projects_skipped"] += 1
+            return None
+        self.counts["projects_set"] += 1
+        return project["id"]
 
     def stage_reversal(self, opp, existing):
         """§4.6: the opportunity left Award Won. The order is not changed. Post a note, add a To Do
@@ -437,6 +492,8 @@ class OrderSync(AccountSync):
         self.print_warnings()
         print(
             f"\nDone ({mode}): created {c['created']}, updated {c['updated']}, unchanged {c['unchanged']}, "
+            f"projects set {c['projects_set']}, already set {c['projects_already_set']}, "
+            f"skipped {c['projects_skipped']}, "
             f"stage reversals {c['stage_reversals']} (notes {c['notes_posted']}, To Dos {c['activities_created']}, "
             f"already open {c['activities_already_open']}), "
             f"lines created {c['lines_created']}, updated {c['lines_updated']}, "
