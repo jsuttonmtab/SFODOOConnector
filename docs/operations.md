@@ -5,51 +5,53 @@
 > 1. **Cloud Odoo**: where production Odoo runs, and whether the connector moves with it.
 > 2. **Salesforce integration user**: a dedicated user with an OAuth client-credentials app
 >    replaces the CLI login. Only `connector/sf_client.get_session()` changes.
->
-> Items marked **(confirm)** are details to verify on the server before relying on them.
 
 ## What runs where
 
 | Piece | Where |
 |---|---|
 | Odoo 19 sandbox (`OdooSandbox19`) | mpl-odoo, port 8069 |
-| Connector code (this repo) | `/opt/sfsync/SFODOOConnector` **(confirm path)** |
-| Connector settings | `connector/.env` in the repo checkout (git-ignored) |
+| Connector code | `/opt/sfsync/SFODOOConnector` |
+| Connector settings | `/opt/sfsync/SFODOOConnector/connector/.env` (git-ignored) |
 | Scheduled run | cron, as the `sfsync` user, every 15 minutes |
 | Wrapper script | `/opt/sfsync/run_sync.sh` |
-| Logs | `/opt/sfsync/logs/` **(confirm path)** |
+| Lock file | `/opt/sfsync/sync.lock` |
+| Logs | `/opt/sfsync/logs/sync-YYYYMMDD.log` |
 | Salesforce login | `sf` CLI login for alias `mtab-sandbox`, owned by `sfsync` |
+
+## Server tooling (mpl-odoo)
+
+- Python 3.14 (`python3`)
+- Node 22, with npm from apt
+- Salesforce CLI 2.155.8, installed globally with npm
+
+The wrapper sets `PATH=/usr/local/bin:/usr/bin:/bin`, so cron finds `sf`.
 
 ## The sfsync account
 
 - A dedicated Linux user, `sfsync`, runs everything. It does not log in interactively and
   should not have sudo.
-- Home directory: `/opt/sfsync`.
-- The sf CLI login and the repo checkout both live under this home directory, so they are
-  owned by `sfsync`.
+- Home directory: `/opt/sfsync`. The repo, the logs, the lock file, the sf CLI login and the
+  SSH key all live under it.
 
 ## GitHub deploy key (read-only)
 
-The server pulls the repo over SSH with a deploy key, not a personal key.
+The repo is cloned over SSH with a read-only deploy key, not a personal key.
 
-1. As `sfsync`, generate a key with no passphrase: `ssh-keygen -t ed25519 -f ~/.ssh/sfodoo_deploy -C "sfsync mpl-odoo"`.
-2. In GitHub: repository **Settings → Deploy keys → Add deploy key**. Paste the `.pub` file.
-   Leave **Allow write access** unticked. The key must stay read-only.
-3. In `~/.ssh/config`, point GitHub at the key:
+- Key location: `/opt/sfsync/.ssh/id_ed25519`
+- GitHub deploy key title: **mpl-odoo sfsync**. It is read-only (write access not granted).
+- Clone URL: `git@github.com:jsuttonmtab/SFODOOConnector.git`. This is a personal GitHub
+  account, not an organisation.
 
-   ```
-   Host github.com
-       IdentityFile ~/.ssh/sfodoo_deploy
-       IdentitiesOnly yes
-   ```
-
-4. Clone once: `git clone git@github.com:<org>/SFODOOConnector.git /opt/sfsync/SFODOOConnector` **(confirm org and path)**.
+If the key ever has to be replaced: generate a new ed25519 key without a passphrase as
+`sfsync`, add the `.pub` file in GitHub under **Settings → Deploy keys** with write access left
+unticked, delete the old key there, and make sure `~/.ssh/config` uses the new file.
 
 ## connector/.env
 
-`connector/.env` is git-ignored and must be created on the server. Start from
-`connector/.env.example`. On mpl-odoo the connector talks to Odoo on the same machine, so the
-URL is `localhost`:
+`connector/.env` is git-ignored and lives on the server only. It is created from
+`connector/.env.example`. The connector runs on the same machine as Odoo, so the URL is
+`localhost`:
 
 ```
 ODOO_URL=http://localhost:8069
@@ -60,61 +62,68 @@ FINANCE_ACTIVITY_USER=<Odoo login of the Finance user>
 AUTO_CREATE_PRODUCTS=false
 ```
 
-- Create the API key in Odoo under Preferences → Account Security → New API Key, for the
+- The API key comes from Odoo under Preferences → Account Security → New API Key, for the
   integration user. Don't use a personal user's key.
 - Keep the file readable by `sfsync` only: `chmod 600 connector/.env`.
-- Set `AUTO_CREATE_PRODUCTS` deliberately. `true` creates new service products in Odoo for
-  Salesforce products with no match.
+- `AUTO_CREATE_PRODUCTS=true` creates new service products in Odoo for Salesforce products
+  with no match. Set it deliberately.
 
-## Salesforce CLI login (import from an sfdx auth URL)
+## Salesforce CLI login (imported, not created on the server)
 
-The login is imported, not created on the server, because the server has no browser.
+The server has no browser, so the login is copied from the workstation as an sfdx auth URL.
 
-1. On a machine with a working login for `mtab-sandbox`, print the auth URL:
-   `sf org display --target-org mtab-sandbox --verbose --json` and copy `sfdxAuthUrl`.
-   The field only appears for logins made with `sf org login web`. A JWT login has none.
-   **Treat it as a password**: it contains a refresh token.
-2. Save it to a file on the server readable only by `sfsync`, then import it as `sfsync`:
+**Export (on the workstation):**
 
-   ```
-   umask 077
-   printf '%s' '<sfdxAuthUrl>' > /opt/sfsync/auth.url
-   sf org login sfdx-url --sfdx-url-file /opt/sfsync/auth.url --alias mtab-sandbox
-   shred -u /opt/sfsync/auth.url
-   ```
+1. `sf org auth show-sfdx-auth-url --target-org mtab-sandbox`. The CLI asks for confirmation
+   before printing the URL.
+   `sf org display --verbose` does **not** show it: in CLI 2.155.x the Sfdx Auth Url is shown
+   as `[REDACTED]`.
+2. Save the URL to a file and copy the file to the server with `scp`.
+3. Delete the local file once it has been imported.
 
-3. Check: `sf org display --target-org mtab-sandbox --json` shows the instance URL and the
-   sandbox username.
+**Import (on the server, as `sfsync`):**
 
-Anyone who has the auth URL can use this login. Don't paste it into chat, tickets or commits.
-The connector only reads from Salesforce, but the login has the same rights as the user who
-created it.
+```
+sf org login sfdx-url --sfdx-url-file <file> --alias mtab-sandbox
+```
+
+Then delete the file on the server. The file was deleted on both sides after the import.
+
+**Check:** `sf org display --target-org mtab-sandbox --json` shows the instance URL and the
+sandbox username.
+
+Rules for this login:
+
+- The auth URL contains a refresh token. Anyone who has it can use the login. Don't paste it
+  into chat, tickets or commits.
+- **Don't run `sf org logout --target-org mtab-sandbox` on the workstation.** The server shares
+  the same login. Logging out on either machine breaks the sync on both.
+- The login has the same rights as the Salesforce user who created it.
 
 ## /opt/sfsync/run_sync.sh
 
-The cron job calls this wrapper. What it must do:
+The cron job calls this wrapper. It:
 
-- **Lock**: take `flock -n` on a lock file under `/opt/sfsync`. If the previous run still
-  holds it, exit without running, so runs never overlap.
-- **Run**, from the repo directory, the account sync and then the order sync. Order lines are
-  part of the order sync. Use `--dry-run` only when checking, as a manual step.
+1. **Locks**: takes `flock -n` on `/opt/sfsync/sync.lock`. If the previous run still holds
+   the lock, the new run is skipped and the skip is logged, so runs never overlap.
+2. **Sets PATH** to `/usr/local/bin:/usr/bin:/bin`, so `sf` is found.
+3. **Runs**, from the repo directory:
 
-  ```
-  python -m connector.sync_accounts
-  python -m connector.sync_orders
-  ```
+   ```
+   python3 -m connector.sync_accounts
+   python3 -m connector.sync_orders
+   ```
 
-- **Log**: append to one log file per day, named by date, under `/opt/sfsync/logs/`.
-  Capture stdout and stderr.
-- **Retain 14 days**: delete logs older than 14 days, for example with
-  `find /opt/sfsync/logs -name 'sync-*.log' -mtime +14 -delete`.
+   Order lines are part of the order sync.
+4. **Logs**: appends the output of both steps to `/opt/sfsync/logs/sync-YYYYMMDD.log`, one
+   file per day.
+5. **Retains 14 days** of logs.
 
-**(confirm)** The script on the server is the reference. If it differs from the above, update
-this section.
+`--dry-run` is not used by the wrapper. Run it by hand when checking a change.
 
 ## Cron
 
-As `sfsync` (`crontab -e`):
+In the `sfsync` user's crontab (`crontab -e` as `sfsync`):
 
 ```
 */15 * * * * /opt/sfsync/run_sync.sh
@@ -135,23 +144,26 @@ git pull --ff-only
 - `--ff-only` refuses to merge, so a local change on the server stops the pull instead of
   silently mixing in.
 - The connector has no build step. The next cron run uses the new code.
-- If the change includes the Odoo module (`odoo_addons/sf_connector`), upgrade the module in
-  Odoo as well: Apps → sf_connector → Upgrade. Code pulled without the upgrade can fail when
-  it writes to fields the database doesn't have yet.
+- If the change includes the Odoo module (`odoo_addons/sf_connector`), also upgrade it in
+  Odoo: Apps → sf_connector → Upgrade. Code pulled without the upgrade can fail when it writes
+  to fields the database doesn't have yet.
 
 ## Checking the logs
 
 ```
 # Last run's summary
-tail -n 5 /opt/sfsync/logs/sync-$(date +%F).log
+tail -n 5 /opt/sfsync/logs/sync-$(date +%Y%m%d).log
 
 # Errors and warnings from today
-grep -E '^ERROR|^WARN|^Warnings' /opt/sfsync/logs/sync-$(date +%F).log
+grep -E '^ERROR|^WARN|^Warnings' /opt/sfsync/logs/sync-$(date +%Y%m%d).log
 
-# Is a run in progress?
-flock -n /opt/sfsync/run_sync.lock -c 'echo idle' || echo 'run in progress'
+# Skipped runs (a previous run still held the lock)
+grep -i 'skip' /opt/sfsync/logs/sync-$(date +%Y%m%d).log
 
-# Cron is installed and running
+# Is a run in progress right now?
+flock -n /opt/sfsync/sync.lock -c 'echo idle' || echo 'run in progress'
+
+# Cron is installed
 crontab -l
 ```
 
@@ -159,13 +171,15 @@ A run ends with a `Done (...)` line with counts for created, updated, unchanged 
 Grouped warnings appear before it, with examples. `ERROR` lines name the record that failed.
 Each Odoo retry is printed as `retry n/3`.
 
-Also check the connection: `python -m connector.check_connections` from the repo directory.
-It checks Odoo and Salesforce and changes nothing.
+To check both connections without changing anything, run from the repo directory:
+`python3 -m connector.check_connections`.
 
 ## Known limits (interim)
 
 - The sf CLI login expires if the refresh token is revoked or the user's access changes. The
-  next run then fails with a Salesforce error. Re-import the login as above.
-- The 14-day retention applies to logs only. Odoo and Salesforce keep no copy of the connector's
-  output.
+  next run then fails with a Salesforce error. Re-import a fresh login as above.
+- The workstation and the server share one login. Any logout or revocation on either side
+  stops the sync.
+- Logs are kept 14 days and only on the server. Odoo and Salesforce keep no copy of the
+  connector's output.
 - Odoo runs on the same host as the connector, so a host outage stops both.
