@@ -299,14 +299,26 @@ Finance prefers handling this in Odoo rather than locking SF. **Rule:**
 
 - If a synced opportunity moves from stage 07 / `Closed` to any other stage, the
   connector does **not** change or cancel the Odoo order.
+- A reversal is acted on only when `sf_stage` in Odoo differs from the stage in
+  Salesforce. A reversed order whose stage has not changed since the last run is
+  counted silently and produces no warning, note or To Do.
 - It posts an internal note on the order and creates a **To Do** for the Finance
   user (`FINANCE_ACTIVITY_USER`) to review (cancel, keep, or wait for SF to be
   corrected). The To Do is created with Odoo's standard `activity_schedule`, so
   the connector needs no access to `ir.model`.
 - It updates `sf_stage` last. Each step checks Odoo first, so a run that fails
-  part-way finishes on the next run: the note is posted once (matched by its text
-  in the order's chatter) and a To Do is created only if no open connector To Do
-  is on the order.
+  part-way finishes on the next run: the note is posted once and a To Do is created
+  only if no open connector To Do is on the order.
+- **One note per reversal.** When an order returns to Award Won, the connector
+  posts a marker note ("Salesforce stage back to …"). A reversal note counts as
+  already posted only if it comes after the latest marker. So a deal that goes
+  07 → 06, back to 07, then 06 again gets a second note. The marker is a chatter
+  message because it survives restarts and needs no extra field.
+- When an order's lines change, the connector posts one note per run on the order
+  listing the Finance/CS changes: product, quantity, unit price, On Hold, removed
+  and added lines, in the order currency's format. Nothing is posted when nothing
+  changed, and a new order gets no note. The note is posted after the lines are
+  written. If that post fails, the change is not repeated, so the note is missing.
 - If `FINANCE_ACTIVITY_USER` is unset, not found, archived or a portal user, the
   connector warns once per run and skips the To Do; the note is still posted.
 - If `FINANCE_ACTIVITY_USER` is the API user (`ODOO_API_LOGIN`, when set), the
@@ -430,4 +442,5 @@ sf data query --query "SELECT ContentDocument.Title, ContentDocument.FileExtensi
 | 2026-10-15 | ParentId stored in `sf_parent_account_id`, not `parent_id`: Odoo's `parent_id` copies parent addresses into children and pushes changes down | Jason |
 | 2026-10-15 | VAT cleaned before write (label removed, spaces/dots/hyphens removed, upper case, ISO country prefix). A rejected VAT is saved without VAT, the SF value is kept in `sf_vat_rejected`, and it is not retried until the SF value changes | Jason |
 | 2026-10-27 | Connector-managed sale orders are set to the `DS deliverables` project so CS can see their deliverables in the Delivery Tracker. Set on create and backfilled once where empty; never overwritten. Service products created by the connector have `service_tracking = 'no'`, so the project does not create tasks | Jason |
+| 2026-10-27 | Stage reversals: one note per actual reversal (a return to Award Won is marked in the chatter); reversed orders with no stage change are silent; line changes are posted as one note per run listing Finance/CS-facing changes | Jason |
 | 2026-10-14 | Deliverable holds are managed only from SF; clearing On Hold releases all of the line's undelivered deliverables | Jason |

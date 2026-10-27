@@ -285,9 +285,23 @@ class OrderSync(AccountSync):
         if existing and self.lines.blocked(existing["id"], {line["Id"] for line in sf_lines}):
             self.order_error(opp, "a delivered line was removed in Salesforce; order not changed (§4.4)")
             return
+        if existing and existing.get("sf_stage") != STAGE_AWARD_WON and opp["StageName"] == STAGE_AWARD_WON:
+            self.note_back_at_award_won(opp, existing)
         ok, order_id = self.sync_header(opp, existing)
         if ok:
-            self.lines.sync(opp, order_id, sf_lines)
+            self.lines.sync(opp, order_id, sf_lines, new_order=existing is None)
+
+    def note_back_at_award_won(self, opp, existing):
+        """Mark on the order that its opportunity is back at Award Won. Notes for a later reversal
+        count only if posted after the latest of these markers, so every actual reversal gets one note.
+        Posted before the header is written: if this fails, the header is retried on the next run."""
+        old = show(existing.get("sf_stage"))
+        body = f"Salesforce stage back to {STAGE_AWARD_WON} (was {old})."
+        self.report_order("post back-at-Award-Won note", opp, f"{old} -> {STAGE_AWARD_WON}")
+        if not self.dry_run:
+            self.odoo.call("sale.order", "message_post", ids=[existing["id"]], body=body,
+                           message_type="comment", subtype_xmlid="mail.mt_note")
+        self.counts["back_notes_posted"] += 1
 
     def sync_header(self, opp, existing):
         """Create or update the order header. Returns (ok, order_id). order_id is None for a
@@ -393,16 +407,17 @@ class OrderSync(AccountSync):
 
     def stage_reversal(self, opp, existing):
         """§4.6: the opportunity left Award Won. The order is not changed. Post a note, add a To Do
-        for the Finance user, then record the new stage. Each step checks Odoo first, so a run
-        that failed part-way finishes the rest on the next run without a duplicate note or To Do.
-        Only runs when the stage actually changes."""
+        for the Finance user, then record the new stage. Acts only when the stage changed since the
+        last run: an unchanged reversed order is counted silently and nothing is warned. Each step
+        checks Odoo first, so a run that failed part-way finishes on the next run without duplicates."""
         new_stage = opp["StageName"]
         old_stage = existing.get("sf_stage")
-        change = f"{show(old_stage)} -> {new_stage}" if old_stage != new_stage else f"still {new_stage}"
-        self.warn("stage moved out of Award Won (order not changed, review in Odoo)", change, opp)
-        self.counts["stage_reversals"] += 1
         if old_stage == new_stage:
+            self.counts["reversed_unchanged"] += 1
             return
+        self.warn("stage moved out of Award Won (order not changed, review in Odoo)",
+                  f"{show(old_stage)} -> {new_stage}", opp)
+        self.counts["stage_reversals"] += 1
 
         body = (f"Salesforce stage changed from {show(old_stage)} to {new_stage}. "
                 "The order was not changed; please review it.")
@@ -420,11 +435,22 @@ class OrderSync(AccountSync):
         if not self.dry_run:
             self.odoo.write("sale.order", [existing["id"]], {"sf_stage": new_stage})
 
-    def note_posted(self, order_id, old_stage, new_stage):
-        """True if the stage-change note is already in the order's chatter (from any earlier run)."""
+    def last_return_id(self, order_id):
+        """Id of the latest 'back at Award Won' marker on the order, or 0 if there is none."""
         rows = self.odoo.search_read("mail.message", [
             ("model", "=", "sale.order"),
             ("res_id", "=", order_id),
+            ("body", "ilike", "Salesforce stage back to"),
+        ], ["id"])
+        return max((r["id"] for r in rows), default=0)
+
+    def note_posted(self, order_id, old_stage, new_stage):
+        """True if this reversal's note is already on the order. Only notes posted after the order
+        last returned to Award Won count, so a repeat reversal to the same stage gets its own note."""
+        rows = self.odoo.search_read("mail.message", [
+            ("model", "=", "sale.order"),
+            ("res_id", "=", order_id),
+            ("id", ">", self.last_return_id(order_id)),
             ("body", "ilike", f"from {old_stage} to {new_stage}. The order was not changed"),
         ], ["id"])
         return bool(rows)
@@ -488,16 +514,18 @@ class OrderSync(AccountSync):
     def summary(self):
         c = self.counts
         mode = "dry run, nothing written" if self.dry_run else "written to Odoo"
-        print(f"\nInfo: {c['closed_not_in_odoo']} Closed opportunities not in Odoo (ignored)")
+        print(f"\nInfo: {c['closed_not_in_odoo']} Closed opportunities not in Odoo (ignored); "
+              f"{c['reversed_unchanged']} reversed orders with no stage change")
         self.print_warnings()
         print(
             f"\nDone ({mode}): created {c['created']}, updated {c['updated']}, unchanged {c['unchanged']}, "
             f"projects set {c['projects_set']}, already set {c['projects_already_set']}, "
             f"skipped {c['projects_skipped']}, "
             f"stage reversals {c['stage_reversals']} (notes {c['notes_posted']}, To Dos {c['activities_created']}, "
-            f"already open {c['activities_already_open']}), "
+            f"already open {c['activities_already_open']}, back-at-Award-Won notes {c['back_notes_posted']}), "
             f"lines created {c['lines_created']}, updated {c['lines_updated']}, "
             f"unchanged {c['lines_unchanged']}, removed {c['lines_removed']}, "
+            f"line change notes {c['line_notes_posted']}, "
             f"products created {c['products_created']}, "
             f"invoice addresses created {c['invoice_addresses_created']}, "
             f"pricelists created {c['pricelists_created']}, errors {c['errors']}"

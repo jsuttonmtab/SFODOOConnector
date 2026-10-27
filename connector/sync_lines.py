@@ -8,6 +8,8 @@ sync_orders changes nothing on it (see LineSync.blocked).
 
 Used by sync_orders.OrderSync, which passes itself in as `parent` (for counts, warnings and errors).
 """
+import html
+
 from . import config
 from .odoo_client import m2o_id
 from .sync_accounts import diff, show, soql_literal, text
@@ -34,6 +36,15 @@ LINE_M2O = {"product_id"}
 DELIVERY_MAP = {"Classic": "classic", "Halo": "halo", "Both": "both"}
 # §3: the billing schedule default is a placeholder, treated as empty.
 BILLING_PLACEHOLDERS = {"Prepopulated on Save", "This will prepopulate on save"}
+
+
+def _decimals(value):
+    """Decimal places from Odoo; anything that is not a whole number (or is a bool) means 2."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 2
+
+
+def qty_text(value):
+    return "-" if value in (None, False) else f"{value:g}"
 
 
 def fetch_sf_lines(sf, opp_ids):
@@ -184,12 +195,82 @@ class LineSync:
 
     # ----- run -----
 
-    def sync(self, opp, order_id, sf_lines):
+    def sf_product_name(self, sf_line):
+        product = sf_line.get("Product2") or {}
+        return text(product.get("Name")) or text(sf_line.get("Combined_Product_Description__c")) or "Line"
+
+    def odoo_product_name(self, rec):
+        product = rec.get("product_id")
+        return product[1] if isinstance(product, (list, tuple)) and len(product) > 1 else rec.get("name") or "Line"
+
+    def currency_info(self, code):
+        cache = self.__dict__.setdefault("_currency_info", {})
+        if code not in cache:
+            rows = self.odoo.search_read("res.currency", [("name", "=", code or "")],
+                                         ["symbol", "decimal_places", "position"])
+            if rows:
+                r = rows[0]
+                cache[code] = {
+                    "symbol": r["symbol"] or "",
+                    "dp": _decimals(r["decimal_places"]),
+                    "position": r["position"] or "before",
+                }
+            else:
+                cache[code] = {"symbol": f"{code} " if code else "", "dp": 2, "position": "before"}
+        return cache[code]
+
+    def money(self, value, code):
+        """An amount in the order currency, formatted with the currency's symbol and decimals."""
+        info = self.currency_info(code)
+        number = "-" if value in (None, False) else f"{value:,.{info['dp']}f}"
+        if info["position"] == "after":
+            return f"{number} {info['symbol']}"
+        return f"{info['symbol']}{number}"
+
+    def changed_text(self, rec, changes, sf_line, currency):
+        """One sentence for an updated line, or None if no Finance/CS-facing field changed."""
+        by_field = {f: (c, w) for f, c, w in changes}
+        clauses = []
+        if "product_id" in by_field:
+            old = rec["product_id"][1] if isinstance(rec["product_id"], (list, tuple)) else "-"
+            clauses.append(f"product {old} → {self.sf_product_name(sf_line)}")
+        if "product_uom_qty" in by_field:
+            c, w = by_field["product_uom_qty"]
+            clauses.append(f"quantity {qty_text(c)} → {qty_text(w)}")
+        if "price_unit" in by_field:
+            c, w = by_field["price_unit"]
+            clauses.append(f"price {self.money(c, currency)} → {self.money(w, currency)}")
+        if "sf_on_hold" in by_field:
+            clauses.append("On Hold set" if by_field["sf_on_hold"][1] else "On Hold cleared")
+        if "sf_removed_in_sf" in by_field and not by_field["sf_removed_in_sf"][1]:
+            clauses.append("back in Salesforce")
+        if not clauses:
+            return None
+        return f"{self.sf_product_name(sf_line)} — " + ", ".join(clauses) + "."
+
+    def added_text(self, sf_line, vals, currency):
+        return (f"{self.sf_product_name(sf_line)} (qty {qty_text(vals['product_uom_qty'])} "
+                f"@ {self.money(vals['price_unit'], currency)})")
+
+    def post_note(self, opp, order_id, parts):
+        """One internal note on the order listing the Finance/CS-facing changes of this run."""
+        body = "Salesforce changes: " + " ".join(parts)
+        self.counts["line_notes_posted"] += 1
+        if self.dry_run:
+            print(f"[dry-run] would post line note on {opp['Id']} {opp['Name']}: {body}")
+            return
+        self.odoo.call("sale.order", "message_post", ids=[order_id], body=html.escape(body),
+                       message_type="comment", subtype_xmlid="mail.mt_note")
+
+    def sync(self, opp, order_id, sf_lines, new_order=False):
         """Create, update and remove lines of one order. order_id is None only in a dry run for a
-        new order, where the lines are counted but not created."""
+        new order, where the lines are counted but not created. Changes to an existing order are
+        posted as ONE note per run; a new order gets no note."""
         existing = {rec["sf_line_id"]: rec for rec in self.by_order.get(order_id, [])} if order_id else {}
         sf_ids = {line["Id"] for line in sf_lines}
+        currency = opp.get("CurrencyIsoCode")
         created, updated, removed = [], [], []
+        update_parts, removed_parts, added_parts = [], [], []
 
         for sf_line in sf_lines:
             sf_id = sf_line["Id"]
@@ -205,6 +286,7 @@ class LineSync:
                     vals.update({"order_id": order_id, "sf_line_id": sf_id})
                     self.odoo.create("sale.order.line", [vals])
                 self.counts["lines_created"] += 1
+                added_parts.append(self.added_text(sf_line, vals, currency))
                 continue
 
             for field, message in problems.items():
@@ -218,6 +300,9 @@ class LineSync:
             if not self.dry_run:
                 self.odoo.write("sale.order.line", [rec["id"]], {f: w for f, _, w in changes})
             self.counts["lines_updated"] += 1
+            part = self.changed_text(rec, changes, sf_line, currency)
+            if part:
+                update_parts.append(part)
 
         # §4.4: lines no longer in Salesforce. Delivered ones were blocked before the order was touched.
         for sf_id, rec in existing.items():
@@ -229,7 +314,13 @@ class LineSync:
             if not self.dry_run:
                 self.odoo.write("sale.order.line", [rec["id"]], {"product_uom_qty": 0.0, "sf_removed_in_sf": True})
             self.counts["lines_removed"] += 1
+            removed_parts.append(f"{self.odoo_product_name(rec)} — removed in Salesforce (quantity → 0).")
 
         if created or updated or removed:
             print(f"lines {opp['Id']} {opp['Name']}: create {len(created)}, update {len(updated)}, "
                   f"remove {len(removed)}")
+        parts = update_parts + removed_parts
+        if added_parts:
+            parts.append("Added: " + "; ".join(added_parts) + ".")
+        if parts and not new_order:
+            self.post_note(opp, order_id, parts)
