@@ -7,3 +7,5 @@ config.local.*
 odoo_fields.json
 *.log
 missing_country.csv
+logs/
+netsuite_stage_mismatch.csv
