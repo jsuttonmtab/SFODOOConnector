@@ -298,11 +298,22 @@ Finance prefers handling this in Odoo rather than locking SF. **Rule:**
 
 - If a synced opportunity moves from stage 07 / `Closed` to any other stage, the
   connector does **not** change or cancel the Odoo order.
-- It updates `sf_stage`, posts a message on the order, and creates an Odoo
-  activity for Finance to review (cancel, keep, or wait for SF to be corrected).
-- It writes a warning to `Odoo_Sync_Error__c` in SF.
-- If the opportunity returns to stage 07 / `Closed`, the activity can be closed;
-  syncing continues normally.
+- It posts an internal note on the order and creates a **To Do** for the Finance
+  user (`FINANCE_ACTIVITY_USER`) to review (cancel, keep, or wait for SF to be
+  corrected). The To Do is created with Odoo's standard `activity_schedule`, so
+  the connector needs no access to `ir.model`.
+- It updates `sf_stage` last. Each step checks Odoo first, so a run that fails
+  part-way finishes on the next run: the note is posted once (matched by its text
+  in the order's chatter) and a To Do is created only if no open connector To Do
+  is on the order.
+- If `FINANCE_ACTIVITY_USER` is unset, not found, archived or a portal user, the
+  connector warns once per run and skips the To Do; the note is still posted.
+- If `FINANCE_ACTIVITY_USER` is the API user (`ODOO_API_LOGIN`, when set), the
+  To Do is created but Odoo sends no assignment email. The connector warns.
+- It writes a warning to `Odoo_Sync_Error__c` in SF. (Not implemented yet: the
+  connector does not write to SF.)
+- If the opportunity returns to stage 07 / `Closed`, the To Do can be closed by
+  Finance; syncing continues normally. The connector does not close it.
 
 Optional, SF admin: a confirmation prompt when changing the stage of an
 opportunity that has an Odoo ID, to catch misclicks.

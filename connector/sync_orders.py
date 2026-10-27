@@ -337,9 +337,10 @@ class OrderSync(AccountSync):
         return True, existing["id"]
 
     def stage_reversal(self, opp, existing):
-        """§4.6: the opportunity left Award Won. Do not change the order. Post a note, add a To Do
-        for the Finance user, and record the new stage. Only when the stage actually changes, so
-        re-runs do not repeat the note."""
+        """§4.6: the opportunity left Award Won. The order is not changed. Post a note, add a To Do
+        for the Finance user, then record the new stage. Each step checks Odoo first, so a run
+        that failed part-way finishes the rest on the next run without a duplicate note or To Do.
+        Only runs when the stage actually changes."""
         new_stage = opp["StageName"]
         old_stage = existing.get("sf_stage")
         change = f"{show(old_stage)} -> {new_stage}" if old_stage != new_stage else f"still {new_stage}"
@@ -348,66 +349,85 @@ class OrderSync(AccountSync):
         if old_stage == new_stage:
             return
 
-        detail = f"{show(old_stage)} -> {new_stage}"
         body = (f"Salesforce stage changed from {show(old_stage)} to {new_stage}. "
                 "The order was not changed; please review it.")
-        self.report_order("post note", opp, detail)
-        if not self.dry_run:
-            self.odoo.call("sale.order", "message_post", ids=[existing["id"]], body=body,
-                           message_type="comment", subtype_xmlid="mail.mt_note")
-        self.counts["notes_posted"] += 1
-        self.review_activity(opp, existing, body)
+        if self.note_posted(existing["id"], show(old_stage), new_stage):
+            self.counts["notes_already_posted"] += 1
+        else:
+            self.report_order("post note", opp, f"{show(old_stage)} -> {new_stage}")
+            if not self.dry_run:
+                self.odoo.call("sale.order", "message_post", ids=[existing["id"]], body=body,
+                               message_type="comment", subtype_xmlid="mail.mt_note")
+            self.counts["notes_posted"] += 1
+        self.review_activity(opp, existing["id"], body)
 
-        self.report_order("update sf_stage", opp, detail)
+        self.report_order("update sf_stage", opp, f"{show(old_stage)} -> {new_stage}")
         if not self.dry_run:
             self.odoo.write("sale.order", [existing["id"]], {"sf_stage": new_stage})
 
-    def activity_refs(self):
-        if not hasattr(self, "_activity_refs"):
-            model = self.odoo.search_read("ir.model", [("model", "=", "sale.order")], ["id"])
-            todo = self.odoo.search_read("mail.activity.type", [("name", "=", "To Do")], ["id"])
-            self._activity_refs = {
-                "model_id": model[0]["id"] if model else None,
-                "todo_id": todo[0]["id"] if todo else None,
-            }
-        return self._activity_refs
+    def note_posted(self, order_id, old_stage, new_stage):
+        """True if the stage-change note is already in the order's chatter (from any earlier run)."""
+        rows = self.odoo.search_read("mail.message", [
+            ("model", "=", "sale.order"),
+            ("res_id", "=", order_id),
+            ("body", "ilike", f"from {old_stage} to {new_stage}. The order was not changed"),
+        ], ["id"])
+        return bool(rows)
 
-    def review_activity(self, opp, existing, body):
+    def open_review_activity(self, order_id):
+        """True if an open To Do with the connector's summary is already on the order."""
+        order = self.odoo.search_read("sale.order", [("id", "=", order_id)], ["activity_ids"])
+        activity_ids = (order[0]["activity_ids"] or []) if order else []
+        if not activity_ids:
+            return False
+        rows = self.odoo.search_read("mail.activity", [
+            ("id", "in", activity_ids),
+            ("summary", "=", REVIEW_ACTIVITY_SUMMARY),
+        ], ["id"])
+        return bool(rows)
+
+    def resolve_finance_user(self):
+        """Resolve FINANCE_ACTIVITY_USER once per run to an active internal user id, or None.
+        A problem is logged once, not once per order."""
+        if hasattr(self, "_finance_user_id"):
+            return self._finance_user_id
+        self._finance_user_id = None
         login = config.FINANCE_ACTIVITY_USER
         if not login:
-            self.warn("FINANCE_ACTIVITY_USER not set (no To Do created)", "", opp)
-            return
-        user_id = self.users.get(login.lower())
-        if not user_id:
-            self.warn("FINANCE_ACTIVITY_USER login not found in Odoo (no To Do created)", login, opp)
-            return
-        refs = self.activity_refs()
-        if not refs["model_id"] or not refs["todo_id"]:
-            self.warn("sale.order or To Do activity type not found in Odoo (no To Do created)", "", opp)
-            return
+            self.warn("FINANCE_ACTIVITY_USER not set; To Dos skipped", "")
+            return None
+        rows = self.odoo.search_read("res.users", [("login", "=", login), ("active", "in", [True, False])],
+                                     ["id", "active", "share"])
+        if not rows:
+            self.warn("FINANCE_ACTIVITY_USER login not found in Odoo; To Dos skipped", login)
+            return None
+        user = rows[0]
+        if not user["active"]:
+            self.warn("FINANCE_ACTIVITY_USER is an archived user; To Dos skipped", login)
+            return None
+        if user["share"]:
+            self.warn("FINANCE_ACTIVITY_USER is a portal user, not an internal user; To Dos skipped", login)
+            return None
+        if config.ODOO_API_LOGIN and login.lower() == config.ODOO_API_LOGIN.lower():
+            self.warn("FINANCE_ACTIVITY_USER is the API user; Odoo will not send an assignment email", login)
+        self._finance_user_id = user["id"]
+        return user["id"]
 
-        open_activities = self.odoo.search_read(
-            "mail.activity",
-            [("res_model_id", "=", refs["model_id"]), ("res_id", "=", existing["id"]),
-             ("summary", "=", REVIEW_ACTIVITY_SUMMARY)],
-            ["id"],
-        )
-        if open_activities:
+    def review_activity(self, opp, order_id, body):
+        """Create the To Do with the standard Odoo method, unless one is already open."""
+        user_id = self.resolve_finance_user()
+        if not user_id:
+            self.counts["todos_skipped"] += 1
+            return
+        if self.open_review_activity(order_id):
             self.counts["activities_already_open"] += 1
             self.report_order("skip To Do (one is already open)", opp)
             return
-
-        self.report_order("create To Do", opp, f"for {login}")
+        self.report_order("create To Do", opp, f"for {config.FINANCE_ACTIVITY_USER}")
         if not self.dry_run:
-            self.odoo.create("mail.activity", [{
-                "res_model_id": refs["model_id"],
-                "res_id": existing["id"],
-                "activity_type_id": refs["todo_id"],
-                "summary": REVIEW_ACTIVITY_SUMMARY,
-                "note": body,
-                "user_id": user_id,
-                "date_deadline": date.today().isoformat(),
-            }])
+            self.odoo.call("sale.order", "activity_schedule", ids=[order_id],
+                           act_type_xmlid="mail.mail_activity_data_todo", summary=REVIEW_ACTIVITY_SUMMARY,
+                           note=body, user_id=user_id, date_deadline=date.today().isoformat())
         self.counts["activities_created"] += 1
 
     def summary(self):
@@ -431,9 +451,12 @@ PENDING_PARTNER = PENDING  # marker for a customer that only exists in this dry 
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Sync Salesforce Opportunities to Odoo sales orders (headers).")
+    parser = argparse.ArgumentParser(
+        description="Sync Salesforce Opportunities to Odoo sales orders (headers and lines).")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would change; write nothing to Odoo")
+    parser.add_argument("--opportunity", metavar="SF_ID",
+                        help="sync only this opportunity (for checks on one order)")
     args = parser.parse_args(argv)
 
     try:
@@ -445,10 +468,16 @@ def main(argv=None):
 
         qualifying = sf.query(build_opp_soql(f"StageName IN {stage_list_soql()}"))
         qualifying_ids = {o["Id"] for o in qualifying}
-        line_opp_ids = [o["Id"] for o in qualifying if o["StageName"] == STAGE_AWARD_WON or o["Id"] in sync.orders]
         # Orders already in Odoo whose opportunity has left stage 07 / Closed (§4.6).
         reversal_ids = [sid for sid in sync.orders if sid not in qualifying_ids]
         reversals = query_opps_by_id(sf, reversal_ids) if reversal_ids else []
+        if args.opportunity:
+            qualifying = [o for o in qualifying if o["Id"] == args.opportunity]
+            reversals = [o for o in reversals if o["Id"] == args.opportunity]
+            if not qualifying and not reversals:
+                print(f"ERROR {args.opportunity} is not a synced order candidate "
+                      "(stage 07 or Closed, or an existing order whose stage changed)")
+                return 1
         opps = qualifying + reversals
 
         # Customers must exist before their orders (§2). Sync the missing accounts first.
@@ -464,6 +493,7 @@ def main(argv=None):
             AccountSync(odoo, args.dry_run).run(accounts, parents)
             sync.load_partners()
 
+        line_opp_ids = [o["Id"] for o in qualifying if o["StageName"] == STAGE_AWARD_WON or o["Id"] in sync.orders]
         sync.sf_lines = fetch_sf_lines(sf, line_opp_ids)
         print(f"{len(qualifying)} opportunities at stage {STAGE_AWARD_WON!r} or Closed, "
               f"{len(reversals)} existing orders whose opportunity left them")

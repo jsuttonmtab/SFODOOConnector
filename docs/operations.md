@@ -59,6 +59,7 @@ ODOO_DB=OdooSandbox19
 ODOO_API_KEY=<API key of the integration user in Odoo>
 SF_TARGET_ORG=mtab-sandbox
 FINANCE_ACTIVITY_USER=<Odoo login of the Finance user>
+ODOO_API_LOGIN=<Odoo login the API key belongs to; optional, used only for a warning>
 AUTO_CREATE_PRODUCTS=false
 ```
 

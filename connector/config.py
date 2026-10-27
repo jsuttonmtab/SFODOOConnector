@@ -27,6 +27,9 @@ load_env()
 ODOO_URL = os.environ.get("ODOO_URL", "")
 ODOO_DB = os.environ.get("ODOO_DB", "")
 ODOO_API_KEY = os.environ.get("ODOO_API_KEY", "")
+# Optional: login of the user the API key belongs to. Used only to warn when that user is the
+# FINANCE_ACTIVITY_USER (Odoo does not email an assignment to yourself).
+ODOO_API_LOGIN = os.environ.get("ODOO_API_LOGIN", "").strip()
 
 # Salesforce org alias for the sf CLI.
 SF_TARGET_ORG = os.environ.get("SF_TARGET_ORG", "mtab-sandbox")
