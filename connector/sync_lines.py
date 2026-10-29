@@ -93,6 +93,8 @@ class LineSync:
 
     def line_error(self, opp, sf_line, message):
         self.counts["errors"] += 1
+        # Lines have no error field in Salesforce, so the message goes on the opportunity.
+        self.parent.issues[opp["Id"]].append(f"line {sf_line['Id']}: {message}")
         print(f"ERROR line {sf_line['Id']} on {opp['Id']} {opp['Name']}: {message}")
 
     def resolve_product(self, sf_line, problems):

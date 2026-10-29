@@ -2,7 +2,8 @@
 
 Mapping: docs/field-mapping.md §2, §4.1, §4.3, §4.4, §4.6.
 Upsert key: sale.order.sf_opportunity_id. Orders are created as drafts and never confirmed.
-Salesforce is read only. Nothing is written back.
+Writes nothing to Salesforce itself. The write-back of ids, links, errors and line quantities is in
+sf_writeback.py (§5.1).
 
     python -m connector.sync_orders --dry-run   # report what would change, write nothing
     python -m connector.sync_orders             # create and update in Odoo
@@ -15,6 +16,7 @@ from datetime import date
 from . import config
 from .odoo_client import OdooClient, OdooError, m2o_id
 from .sf_client import SalesforceClient, SalesforceError, get_session
+from .sf_writeback import write_accounts, write_opportunities
 from .sync_lines import LineSync, fetch_sf_lines
 from .sync_accounts import (
     INVALID_EMAIL_SUFFIX, PENDING, AccountSync, build_parent_soql, comment_html,
@@ -22,7 +24,7 @@ from .sync_accounts import (
 )
 
 STAGE_AWARD_WON = config.STAGE_AWARD_WON
-STAGE_CLOSED = "Closed"
+STAGE_CLOSED = config.STAGE_CLOSED
 PLACEHOLDER_NEW_INVOICE_ADDRESS = "new invoice address"
 REVIEW_ACTIVITY_SUMMARY = "Salesforce stage left Award Won: review order"
 
@@ -246,6 +248,7 @@ class OrderSync(AccountSync):
 
     def order_error(self, opp, message):
         self.counts["errors"] += 1
+        self.issues[opp["Id"]].append(message)
         print(f"ERROR {opp['Id']} {opp['Name']}: {message}")
 
     # ----- run -----
@@ -415,8 +418,9 @@ class OrderSync(AccountSync):
         if old_stage == new_stage:
             self.counts["reversed_unchanged"] += 1
             return
+        # Logged only: the Salesforce error text states the reversal while it lasts (sf_writeback.py).
         self.warn("stage moved out of Award Won (order not changed, review in Odoo)",
-                  f"{show(old_stage)} -> {new_stage}", opp)
+                  f"{opp['Id']} {opp['Name']}: {show(old_stage)} -> {new_stage}")
         self.counts["stage_reversals"] += 1
 
         body = (f"Salesforce stage changed from {show(old_stage)} to {new_stage}. "
@@ -575,7 +579,9 @@ def main(argv=None):
             parents = fetch_parent_chain(sf, accounts)
             print(f"{len(missing)} customers missing in Odoo: running the account sync for {len(accounts)} "
                   f"accounts and {len(parents)} parents first")
-            AccountSync(odoo, args.dry_run).run(accounts, parents)
+            account_sync = AccountSync(odoo, args.dry_run)
+            account_sync.run(accounts, parents)
+            write_accounts(sf, odoo, args.dry_run, accounts + parents, account_sync.issues)
             sync.load_partners()
 
         line_opp_ids = [o["Id"] for o in qualifying if o["StageName"] == STAGE_AWARD_WON or o["Id"] in sync.orders]
@@ -591,6 +597,8 @@ def main(argv=None):
     except OdooError as err:
         print(f"ERROR {err}")
         return 1
+    # After the Odoo side, so a Salesforce problem cannot stop the Odoo sync.
+    write_opportunities(sf, odoo, args.dry_run, opps, sync.issues, sync.sf_lines)
     return 0
 
 

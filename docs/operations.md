@@ -1,10 +1,12 @@
 # Operations: sandbox sync on mpl-odoo
 
-> **Interim setup.** This runs the connector against the sandbox Odoo on mpl-odoo and uses a
-> personal Salesforce CLI login. It stays in place until two decisions are made:
+> **Interim setup.** This runs the connector against the sandbox Odoo on mpl-odoo. It stays in place
+> until two decisions are made:
 > 1. **Cloud Odoo**: where production Odoo runs, and whether the connector moves with it.
-> 2. **Salesforce integration user**: a dedicated user with an OAuth client-credentials app
->    replaces the CLI login. Only `connector/sf_client.get_session()` changes.
+> 2. **Salesforce integration user**: the connector logs in with the OAuth client-credentials flow
+>    when `SF_CLIENT_ID` and `SF_CLIENT_SECRET` are set. Without them it falls back to the CLI login
+>    below. The server still uses the CLI login until the integration user can see and update records
+>    (see *Salesforce write-back*).
 
 ## What runs where
 
@@ -57,12 +59,20 @@ unticked, delete the old key there, and make sure `~/.ssh/config` uses the new f
 ODOO_URL=http://localhost:8069
 ODOO_DB=OdooSandbox19
 ODOO_API_KEY=<API key of the integration user in Odoo>
+ODOO_PUBLIC_URL=<URL users open Odoo at, for the links on Salesforce records>
+SF_LOGIN_URL=<My Domain login URL of the sandbox>
+SF_CLIENT_ID=<consumer key of the External Client App "Odoo Integration">
+SF_CLIENT_SECRET=<consumer secret of the same app>
+SF_EXPECTED_ORG_ID=<18-character Id of the org the write-back may write to>
+SF_WRITEBACK=false
 SF_TARGET_ORG=mtab-sandbox
 FINANCE_ACTIVITY_USER=<Odoo login of the Finance user>
 DELIVERABLES_PROJECT=DS deliverables
 ODOO_API_LOGIN=<Odoo login the API key belongs to; optional, used only for a warning>
 AUTO_CREATE_PRODUCTS=false
 ```
+
+`SF_CLIENT_SECRET` is a secret: keep `.env` out of git and out of chat, logs and screenshots.
 
 - The API key comes from Odoo under Preferences → Account Security → New API Key, for the
   integration user. Don't use a personal user's key.
@@ -177,7 +187,41 @@ Each Odoo retry is printed as `retry n/3`.
 To check both connections without changing anything, run from the repo directory:
 `python3 -m connector.check_connections`.
 
+## Salesforce write-back (phase 1)
+
+After the Odoo side of each run, the connector writes Odoo ids, links, sync errors and line
+quantities back to Salesforce. Rules: `docs/field-mapping.md` §5.1. It is off until `SF_WRITEBACK=true`.
+
+**Before the first real write**
+
+1. `python -m connector.check_connections`: Salesforce must show the expected org and log in.
+2. `python -m connector.sync_accounts --dry-run` and `python -m connector.sync_orders --dry-run`.
+   Each prints `[dry-run] would update <Object> <Id> ...` lines and a
+   `Salesforce write-back (dry run, ...)` summary. Nothing is written.
+3. Look for `would stop` lines. Each one names a field the integration user cannot write. Fix that in
+   Salesforce first. The real run stops that object and nothing else.
+4. Check that the `Odoo_Record__c` links open the right record in Odoo. The opportunity link uses
+   `/odoo/action-sale.action_orders/<id>`, which is not yet checked against this Odoo version.
+5. Set `SF_WRITEBACK=true` and run both syncs once. A second run must report `updated 0`.
+
+**Reading the log**
+
+- `Salesforce write-back (...)`: counts per object: updated, unchanged, failed, no Odoo record.
+- `Salesforce failures (n), grouped by type`: one line per error kind, with an example Id.
+- `Salesforce write-back ... stopped`: a check failed (org mismatch, missing setting, field problem).
+  The Odoo side of the run still completed.
+- Records are sent with `allOrNone` off, so one bad record does not stop the others.
+
+**Safety settings**
+
+- `SF_WRITEBACK=false` (the default): no writes, dry runs still work.
+- `SF_EXPECTED_ORG_ID`: a real write is refused unless the login's org Id matches.
+- `ODOO_PUBLIC_URL`: required; the record links are built from it.
+
 ## Known limits (interim)
+
+- The integration user must be able to see and edit the records and the `Odoo_*` fields. Until it
+  can, write-back stays stopped and the server keeps the CLI login.
 
 - The sf CLI login expires if the refresh token is revoked or the user's access changes. The
   next run then fails with a Salesforce error. Re-import a fresh login as above.

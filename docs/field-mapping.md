@@ -323,8 +323,7 @@ Finance prefers handling this in Odoo rather than locking SF. **Rule:**
   connector warns once per run and skips the To Do; the note is still posted.
 - If `FINANCE_ACTIVITY_USER` is the API user (`ODOO_API_LOGIN`, when set), the
   To Do is created but Odoo sends no assignment email. The connector warns.
-- It writes a warning to `Odoo_Sync_Error__c` in SF. (Not implemented yet: the
-  connector does not write to SF.)
+- It is written to `Odoo_Sync_Error__c` in SF (§5.1) for as long as the reversal lasts.
 - If the opportunity returns to stage 07 / `Closed`, the To Do can be closed by
   Finance; syncing continues normally. The connector does not close it.
 
@@ -339,7 +338,51 @@ admin.
 
 ---
 
-## 5. Odoo → Salesforce (invoices)
+## 5. Odoo → Salesforce
+
+### 5.1 Write-back: Odoo ids, links, sync errors and line quantities (phase 1)
+
+Implemented in `connector/sf_writeback.py`. It runs at the end of `sync_accounts` and `sync_orders`,
+after the Odoo side, so a Salesforce failure cannot stop the Odoo sync. Nothing is written to
+Salesforce unless `SF_WRITEBACK=true`. Field names are the org's spelling (`Odoo_ID__c`).
+
+| Object | Field | Value |
+|---|---|---|
+| Account | `Odoo_ID__c` | `res.partner` id |
+| Account | `Odoo_Record__c` | `<ODOO_PUBLIC_URL>/odoo/contacts/<id>` |
+| Account | `Odoo_Sync_Error__c` | This run's errors and warnings for the account, one per line. Blank when clean. |
+| Account | `Odoo_Last_Sync__c` | UTC time of the write (see the rules below) |
+| Opportunity | `Odoo_ID__c` | `sale.order` id. Blank while there is no order. |
+| Opportunity | `Odoo_Record__c` | `<ODOO_PUBLIC_URL>/odoo/action-sale.action_orders/<id>` (check the link on the first real run) |
+| Opportunity | `Odoo_Sync_Error__c` | This run's messages for the opportunity, including its lines' failures (§4.4), plus the stage-reversal message while the order's opportunity is out of Award Won (§4.6) |
+| Opportunity | `Odoo_Last_Sync__c` | As for Account |
+| OpportunityLineItem | `Odoo_Line_ID__c` | `sale.order.line` id |
+| OpportunityLineItem | `Odoo_Qty_Delivered__c` | `qty_delivered`. For deliverable lines (`deliverable_count > 0`), `deliverable_delivered_count`. |
+| OpportunityLineItem | `Odoo_Qty_Invoiced__c` | `qty_invoiced` |
+| OpportunityLineItem | `Odoo_Fulfilled__c` | Deliverable lines (professional services): every deliverable delivered. Other lines (subscriptions): fully invoiced (`qty_invoiced >= product_uom_qty`, quantity above 0). |
+
+**Rules**
+
+- Only fields whose Salesforce value differs are written. Blank and null are the same, and quantities
+  compare to 2 decimals. A run where nothing differs writes nothing.
+- `Odoo_Last_Sync__c` changes only when another field on the same record changes, or the error text
+  does. Otherwise a record is not touched every 15 minutes.
+- Errors on a line have no field of their own in Salesforce, so they go on the opportunity.
+- The stage-reversal message is based on the current state, not on the run that found the reversal.
+  The reversal is detected once (`sf_stage` is then updated), so a message raised only in that run
+  would clear on the next run and nobody would see it.
+- A record with no Odoo record yet (for example a Closed opportunity that was never synced) keeps its
+  `Odoo_ID__c` and `Odoo_Record__c` blank. Its error text is still written.
+- Writes go 200 records per call (Composite sObject Collections, `allOrNone` off). A record Salesforce
+  rejects is counted under its error and the rest still go. Failures are grouped by error in the log.
+- Before writing to an object, every field above is checked: it must exist, have the expected type and
+  be updateable by the integration user. If any does not, that object is skipped and the problem is logged.
+  A dry run still prints the changes and says a real run would stop.
+- A real write is refused unless the authenticated org Id equals `SF_EXPECTED_ORG_ID` and `ODOO_PUBLIC_URL`
+  is set.
+- `--dry-run` prints each record's field changes and writes nothing. It does not need `SF_WRITEBACK`.
+
+### 5.2 Invoices (attachments)
 
 **Requirement (Finance/CS, 2026-10-14):** every invoice PDF issued in Odoo must be
 attached to its opportunity in SF, in the opportunity's Attachments section. Other
@@ -391,7 +434,7 @@ production.
 
 | # | Item | Who | Needed for testing? |
 |---|---|---|---|
-| 1 | Admin: integration user, OAuth app, `Odoo_Id__c` / `Odoo_Record__c` / `Odoo_Sync_Error__c` fields on Account and Opportunity, field locks | SF admin | Yes, for write-back |
+| 1 | Admin: the integration user needs Edit on `Odoo_ID__c`, `Odoo_Record__c`, `Odoo_Sync_Error__c` and `Odoo_Last_Sync__c` (Account, Opportunity) and on `Odoo_Line_ID__c`, `Odoo_Qty_Delivered__c`, `Odoo_Qty_Invoiced__c`, `Odoo_Fulfilled__c` (OpportunityLineItem), and must be able to see the records. **Checked 2026-10-29:** the user can see no Account, Opportunity or line records, Account and Opportunity are not updateable, and the Odoo fields are read-only. Write-back stays stopped for each object until fixed (§5.1). | SF admin | Yes, for write-back |
 | 2 | Which attachment mechanism (Attachment vs Files) and file naming the SF invoice workflows rely on. **Answered 2026-10-14:** classic Attachment records named `<invoice number>.pdf`, created by the integration user (§5). Open: whether SF workflows depend on the invoice-number format. | Jason (query below) / CS | Yes, for invoice sync (naming question for CS) |
 | 3 | Do Odoo products carry the SF `ProductCode` in `default_code`? | Jason | Yes |
 | 4 | Michael Martin's Celigo country alias list | Jason / Michael | Helpful |

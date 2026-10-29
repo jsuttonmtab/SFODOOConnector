@@ -4,7 +4,7 @@ Mapping: docs/field-mapping.md §1, §4.1, §4.1a, §4.3. Upsert key: res.partne
 Parent accounts (ParentId chain) are synced too, as companies. The hierarchy is stored in
 sf_parent_account_id, not parent_id: Odoo copies a parent's address into contact children
 and pushes parent address changes down.
-Salesforce is read only. Nothing is written back.
+Writes nothing to Salesforce itself. The write-back of ids, links and errors is in sf_writeback.py (§5.1).
 
     python -m connector.sync_accounts --dry-run          # report what would change, write nothing
     python -m connector.sync_accounts                    # create and update in Odoo
@@ -20,6 +20,7 @@ from . import config
 from .countries import AddressMatcher
 from .odoo_client import OdooClient, OdooError, m2o_id
 from .sf_client import SalesforceClient, SalesforceError, get_session
+from .sf_writeback import write_accounts
 
 SF_FIELDS = [
     "Id", "Name", "ParentId", "Legal_Entity_Name__c", "Phone", "Website", "Description",
@@ -185,6 +186,7 @@ class AccountSync:
         self.dry_run = dry_run
         self.counts = Counter()
         self.warnings = defaultdict(list)  # kind -> ["<account>: <detail>", ...]
+        self.issues = defaultdict(list)    # Salesforce Id -> this run's messages, for Odoo_Sync_Error__c
         self.parent_ids = set()
 
     # ----- reference data -----
@@ -261,9 +263,12 @@ class AccountSync:
         where = f"{acc['Id']} {acc['Name']}" if acc else ""
         entry = f"{where}: {detail}" if where and detail else (where or detail)
         self.warnings[kind].append(entry)
+        if acc:
+            self.issues[acc["Id"]].append(f"{kind}: {detail}" if detail else kind)
 
     def error(self, acc, err):
         self.counts["errors"] += 1
+        self.issues[acc["Id"]].append(f"error: {err}")
         print(f"ERROR {acc['Id']} {acc['Name']}: {err}")
 
     def print_warnings(self):
@@ -436,6 +441,7 @@ class AccountSync:
                         # Odoo rejected this exact VAT before: do not retry it.
                         vals.pop("vat", None)
                         self.counts["vat_rejected_known"] += 1
+                        self.issues[sf_id].append(f"VAT not written, Odoo rejected it (kept in sf_vat_rejected): {rejected}")
                     elif rejected:
                         # SF VAT changed: try it. The marker clears if Odoo accepts it.
                         vals["sf_vat_rejected"] = False
@@ -603,11 +609,14 @@ def main(argv=None):
 
     print(f"{len(accounts)} accounts with a {config.STAGE_AWARD_WON!r} opportunity, "
           f"{len(parents)} parent accounts added")
+    sync = AccountSync(odoo, args.dry_run)
     try:
-        AccountSync(odoo, args.dry_run).run(accounts, parents)
+        sync.run(accounts, parents)
     except OdooError as err:
         print(f"ERROR {err}")
         return 1
+    # After the Odoo side, so a Salesforce problem cannot stop the Odoo sync.
+    write_accounts(sf, odoo, args.dry_run, accounts + parents, sync.issues)
     return 0
 
 
