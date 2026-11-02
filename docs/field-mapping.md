@@ -350,11 +350,11 @@ Salesforce unless `SF_WRITEBACK=true`. Field names are the org's spelling (`Odoo
 |---|---|---|
 | Account | `Odoo_ID__c` | `res.partner` id |
 | Account | `Odoo_Record__c` | `<ODOO_PUBLIC_URL>/odoo/contacts/<id>` |
-| Account | `Odoo_Sync_Error__c` | This run's errors and warnings for the account, one per line. Blank when clean. |
+| Account | `Odoo_Sync_Error__c` | This run's Sales-actionable messages for the account, one per line. Blank when there are none. Which messages count is `SF_VISIBLE_ISSUES` in `config.py`. Internal ones stay in the log. |
 | Account | `Odoo_Last_Sync__c` | UTC time of the write (see the rules below) |
 | Opportunity | `Odoo_ID__c` | `sale.order` id. Blank while there is no order. |
 | Opportunity | `Odoo_Record__c` | `<ODOO_PUBLIC_URL>/odoo/action-sale.action_orders/<id>` (check the link on the first real run) |
-| Opportunity | `Odoo_Sync_Error__c` | This run's messages for the opportunity, including its lines' failures (§4.4), plus the stage-reversal message while the order's opportunity is out of Award Won (§4.6) |
+| Opportunity | `Odoo_Sync_Error__c` | This run's Sales-actionable messages for the opportunity: order not created, locked field or blocked removal (§4.4), line failures, and the stage-reversal message while the order's opportunity is out of Award Won (§4.6). Internal messages stay in the log. |
 | Opportunity | `Odoo_Last_Sync__c` | As for Account |
 | OpportunityLineItem | `Odoo_Line_ID__c` | `sale.order.line` id |
 | OpportunityLineItem | `Odoo_Qty_Delivered__c` | `qty_delivered`. For deliverable lines (`deliverable_count > 0`), `deliverable_delivered_count`. |
@@ -381,6 +381,18 @@ Salesforce unless `SF_WRITEBACK=true`. Field names are the org's spelling (`Odoo
 - A real write is refused unless the authenticated org Id equals `SF_EXPECTED_ORG_ID` and `ODOO_PUBLIC_URL`
   is set.
 - `--dry-run` prints each record's field changes and writes nothing. It does not need `SF_WRITEBACK`.
+- **What Sales sees.** `Odoo_Sync_Error__c` carries only messages Sales can fix in Salesforce: VAT rejected,
+  billing country or state not matched, unknown billing entity, no billing country, order not created
+  (with its reasons), locked field change rejected, removal blocked on a delivered line, line failures,
+  and the stage reversal. Internal messages stay in the log only: no Odoo user for owner or account
+  manager, Odoo company or payment term not found in Odoo, multiple pricelists, products auto-created,
+  parent not synced, deliverables project not set, shipping address not matched, errors from Odoo itself.
+  The list is `SF_VISIBLE_ISSUES` in `config.py`. A dry run prints how many records would get a non-blank
+  value with every message and with the visible ones only.
+- **Safety guard.** Before any Odoo write, each run checks what Salesforce returned. It stops with exit 1
+  and makes no change (no reversals, no removals, no write-back) when: no accounts, no stage 07/Closed
+  opportunities, no order lines, or fewer opportunities than `SF_MIN_VISIBLE_RATIO` (default 0.9) of the
+  Odoo orders that have a Salesforce opportunity. A dry run stops the same way.
 
 ### 5.2 Invoices (attachments)
 

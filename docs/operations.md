@@ -217,6 +217,10 @@ quantities back to Salesforce. Rules: `docs/field-mapping.md` §5.1. It is off u
 - `SF_WRITEBACK=false` (the default): no writes, dry runs still work.
 - `SF_EXPECTED_ORG_ID`: a real write is refused unless the login's org Id matches.
 - `ODOO_PUBLIC_URL`: required; the record links are built from it.
+- `SF_MIN_VISIBLE_RATIO` (default 0.9): a run stops, with exit 1 and no change, when Salesforce returns
+  no accounts, opportunities or lines, or fewer opportunities than this share of the Odoo orders.
+  A stopped run logs `ERROR Salesforce returned ...`. If it stops on a sandbox that worked before,
+  check the integration user's record access first.
 
 ## Known limits (interim)
 

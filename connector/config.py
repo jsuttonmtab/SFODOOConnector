@@ -46,6 +46,36 @@ SF_EXPECTED_ORG_ID = os.environ.get("SF_EXPECTED_ORG_ID", "").strip()
 # How users reach Odoo, for the Odoo_Record__c links written to Salesforce.
 ODOO_PUBLIC_URL = os.environ.get("ODOO_PUBLIC_URL", "").strip().rstrip("/")
 
+# Safety guard (sf_client.require_visible): stop the run if Salesforce returns fewer than this share
+# of the opportunities Odoo expects.
+SF_MIN_VISIBLE_RATIO = float(os.environ.get("SF_MIN_VISIBLE_RATIO", "0.9"))
+
+# Odoo_Sync_Error__c (sf_writeback.py): only the messages whose text contains one of these is written
+# to Salesforce. Everything else stays in the sync log. Matched as plain substrings, case-sensitive.
+# Add a phrase here to show a message to Sales; remove it to keep one internal.
+SF_VISIBLE_ISSUES = (
+    "VAT rejected",                  # account VAT Odoo would not accept (kept in sf_vat_rejected)
+    "VAT not written",               # same, on later runs
+    "unknown billing entity",        # billing entity picklist value with no Odoo company
+    "billing country not matched",   # account billing country
+    "billing state not matched",     # account billing state (and opportunity billing state)
+    "no billing country",            # account has no billing country
+    "opportunity billing country",   # opportunity billing country missing or not matched
+    "not created:",                  # order not created: the reasons are listed after it
+    "payment terms not set",         # opportunity has no payment terms
+    "billing entity not set",        # opportunity has no billing entity
+    "billing entity",                # billing entity not resolved to an Odoo company
+    "no currency",                   # opportunity has no currency
+    "locked field",                  # header field change rejected (§4.4)
+    "a delivered line was removed",  # removed line is delivered: order not changed (§4.4)
+    "locked (",                      # line field change rejected (§4.4)
+    "no Odoo product",               # line product not in Odoo
+    "has no description",            # line has no description
+    "has no product",                # line has no product
+    "line not created",              # line not created
+    "stage moved out of",            # opportunity left Award Won: order not changed (§4.6)
+)
+
 # §4.6: login of the Odoo user who gets the To Do when a synced opportunity leaves Award Won.
 FINANCE_ACTIVITY_USER = os.environ.get("FINANCE_ACTIVITY_USER", "").strip()
 

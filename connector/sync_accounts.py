@@ -19,7 +19,7 @@ from collections import Counter, defaultdict
 from . import config
 from .countries import AddressMatcher
 from .odoo_client import OdooClient, OdooError, m2o_id
-from .sf_client import SalesforceClient, SalesforceError, get_session
+from .sf_client import SalesforceClient, SalesforceError, get_session, require_visible
 from .sf_writeback import write_accounts
 
 SF_FIELDS = [
@@ -602,6 +602,7 @@ def main(argv=None):
         odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY)
         sf = SalesforceClient(get_session())
         accounts = sf.query(build_soql())
+        require_visible("accounts with a stage 07 opportunity", len(accounts))
         parents = fetch_parent_chain(sf, accounts)
     except (OdooError, SalesforceError) as err:
         print(f"ERROR {err}")

@@ -115,6 +115,24 @@ def get_session(target_org=None):
     return _session
 
 
+def require_visible(what, found, expected=None):
+    """Refuse to continue on a Salesforce read that looks empty or partial.
+
+    Call before any Odoo write. Raises SalesforceError when `found` is 0, or, when `expected` (the
+    number of Odoo records that should be in Salesforce) is given, when `found` is below
+    SF_MIN_VISIBLE_RATIO of it. A run that stops here makes no reversals, removals or write-backs.
+    """
+    if found == 0:
+        raise SalesforceError(
+            f"Salesforce returned 0 {what}. Run stopped before any change. "
+            "Check the integration user's record access (docs/operations.md).")
+    if expected and found < config.SF_MIN_VISIBLE_RATIO * expected:
+        raise SalesforceError(
+            f"Salesforce returned {found} {what}, but Odoo has {expected} orders with a Salesforce "
+            f"opportunity (below SF_MIN_VISIBLE_RATIO {config.SF_MIN_VISIBLE_RATIO}). Run stopped "
+            "before any change. Check the integration user's record access.")
+
+
 class SalesforceClient:
     def __init__(self, session):
         self.session = session

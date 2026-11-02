@@ -89,6 +89,11 @@ def _error_text(messages):
     return text or None
 
 
+def _visible(messages):
+    """The messages Sales can act on in Salesforce. The classification is config.SF_VISIBLE_ISSUES."""
+    return [m for m in messages if any(p in m for p in config.SF_VISIBLE_ISSUES)]
+
+
 def _line_values(rec):
     """§5.1 quantities and fulfilment for one order line. Deliverable lines (professional services)
     use their deliverable count and are fulfilled when all deliverables are. Other lines
@@ -220,6 +225,15 @@ class WriteBack:
 
     # ----- objects -----
 
+    def _error_counts(self, sobject, messages):
+        """Tally one record for the dry-run report: whether its Odoo_Sync_Error__c would be non-blank
+        with every message (before) and with the Sales-visible ones only (after)."""
+        self.counts[(sobject, "error checked")] += 1
+        if messages:
+            self.counts[(sobject, "error before")] += 1
+        if _visible(messages):
+            self.counts[(sobject, "error after")] += 1
+
     def accounts(self, records, issues):
         """Account: Odoo_ID__c and Odoo_Record__c (res.partner), Odoo_Sync_Error__c for this run."""
         if not self._ready() or not self._fields_ok("Account"):
@@ -231,7 +245,9 @@ class WriteBack:
         current = self._current("Account", ids)
         for rec in records:
             sf_id = rec["Id"]
-            desired = {"Odoo_Sync_Error__c": _error_text(issues.get(sf_id, []))}
+            messages = issues.get(sf_id, [])
+            self._error_counts("Account", messages)
+            desired = {"Odoo_Sync_Error__c": _error_text(_visible(messages))}
             if sf_id in partners:
                 desired["Odoo_ID__c"] = partners[sf_id]
                 desired["Odoo_Record__c"] = f"{config.ODOO_PUBLIC_URL}/odoo/contacts/{partners[sf_id]}"
@@ -258,7 +274,8 @@ class WriteBack:
                 if order_id and opp["StageName"] not in (config.STAGE_AWARD_WON, config.STAGE_CLOSED):
                     messages.append(f"stage moved out of {config.STAGE_AWARD_WON}, order not changed, "
                                     f"review in Odoo: Salesforce stage is {opp['StageName']}")
-                desired = {"Odoo_Sync_Error__c": _error_text(messages)}
+                self._error_counts("Opportunity", messages)
+                desired = {"Odoo_Sync_Error__c": _error_text(_visible(messages))}
                 if order_id:
                     desired["Odoo_ID__c"] = order_id
                     desired["Odoo_Record__c"] = f"{config.ODOO_PUBLIC_URL}/odoo/action-sale.action_orders/{order_id}"
@@ -300,6 +317,11 @@ class WriteBack:
             parts.append(f"{label} {verb} {planned - failed}, unchanged {c[(sobject, 'unchanged')]}, "
                          f"failed {failed}, no Odoo record {c[(sobject, 'no Odoo record')]}")
         print(f"\nSalesforce write-back ({mode}): " + "; ".join(parts))
+        for sobject, label in (("Account", "accounts"), ("Opportunity", "opportunities")):
+            if c[(sobject, "error checked")]:
+                print(f"Odoo_Sync_Error__c non-blank, {label}: {c[(sobject, 'error before')]} with every message, "
+                      f"{c[(sobject, 'error after')]} with Sales-visible messages only "
+                      f"(of {c[(sobject, 'error checked')]} checked)")
         if self.failures:
             total = sum(len(ids) for ids in self.failures.values())
             print(f"Salesforce failures ({total}), grouped by type:")

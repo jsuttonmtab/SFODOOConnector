@@ -15,7 +15,7 @@ from datetime import date
 
 from . import config
 from .odoo_client import OdooClient, OdooError, m2o_id
-from .sf_client import SalesforceClient, SalesforceError, get_session
+from .sf_client import SalesforceClient, SalesforceError, get_session, require_visible
 from .sf_writeback import write_accounts, write_opportunities
 from .sync_lines import LineSync, fetch_sf_lines
 from .sync_accounts import (
@@ -555,11 +555,15 @@ def main(argv=None):
         sync.load_reference()
         sync.load_orders()
 
+        # All Salesforce reads happen here, before any Odoo write (the guard is in require_visible).
         qualifying = sf.query(build_opp_soql(f"StageName IN {stage_list_soql()}"))
+        require_visible("opportunities at stage 07 or Closed", len(qualifying))
         qualifying_ids = {o["Id"] for o in qualifying}
-        # Orders already in Odoo whose opportunity has left stage 07 / Closed (§4.6).
-        reversal_ids = [sid for sid in sync.orders if sid not in qualifying_ids]
-        reversals = query_opps_by_id(sf, reversal_ids) if reversal_ids else []
+        # Every opportunity behind an Odoo order. Those no longer in qualifying are the reversal
+        # candidates (§4.6). An order whose opportunity Salesforce does not return is not touched.
+        found = query_opps_by_id(sf, list(sync.orders)) if sync.orders else []
+        require_visible("opportunities behind Odoo orders", len(found), expected=len(sync.orders))
+        reversals = [o for o in found if o["Id"] not in qualifying_ids]
         if args.opportunity:
             qualifying = [o for o in qualifying if o["Id"] == args.opportunity]
             reversals = [o for o in reversals if o["Id"] == args.opportunity]
@@ -568,8 +572,12 @@ def main(argv=None):
                       "(stage 07 or Closed, or an existing order whose stage changed)")
                 return 1
         opps = qualifying + reversals
+        line_opp_ids = [o["Id"] for o in qualifying if o["StageName"] == STAGE_AWARD_WON or o["Id"] in sync.orders]
+        sync.sf_lines = fetch_sf_lines(sf, line_opp_ids)
+        if line_opp_ids:
+            require_visible("order lines", sum(len(lines) for lines in sync.sf_lines.values()))
 
-        # Customers must exist before their orders (§2). Sync the missing accounts first.
+        # Customers must exist before their orders (§2). Sync the missing accounts first (writes to Odoo).
         sync.load_partners()
         needed = {o["AccountId"] for o in qualifying
                   if o.get("AccountId") and (o["StageName"] == STAGE_AWARD_WON or o["Id"] in sync.orders)}
@@ -584,8 +592,6 @@ def main(argv=None):
             write_accounts(sf, odoo, args.dry_run, accounts + parents, account_sync.issues)
             sync.load_partners()
 
-        line_opp_ids = [o["Id"] for o in qualifying if o["StageName"] == STAGE_AWARD_WON or o["Id"] in sync.orders]
-        sync.sf_lines = fetch_sf_lines(sf, line_opp_ids)
         print(f"{len(qualifying)} opportunities at stage {STAGE_AWARD_WON!r} or Closed, "
               f"{len(reversals)} existing orders whose opportunity left them")
     except (OdooError, SalesforceError) as err:
