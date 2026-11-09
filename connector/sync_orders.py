@@ -15,7 +15,7 @@ from datetime import date
 
 from . import config
 from .odoo_client import OdooClient, OdooError, m2o_id
-from .sf_client import SalesforceClient, SalesforceError, get_session, require_visible
+from .sf_client import SalesforceClient, SalesforceError, check_org, get_session, require_visible
 from .sf_writeback import write_accounts, write_opportunities
 from .sync_lines import LineSync, fetch_sf_lines
 from .sync_accounts import (
@@ -552,6 +552,7 @@ def main(argv=None):
     try:
         odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY)
         sf = SalesforceClient(get_session())
+        check_org(sf, args.dry_run)
         sync = OrderSync(odoo, args.dry_run)
         sync.load_reference()
         sync.load_orders()

@@ -377,9 +377,11 @@ Salesforce unless `SF_WRITEBACK=true`. Field names are the org's spelling (`Odoo
   rejects is counted under its error and the rest still go. Failures are grouped by error in the log.
 - Before writing to an object, every field above is checked: it must exist, have the expected type and
   be updateable by the integration user. If any does not, that object is skipped and the problem is logged.
-  A dry run still prints the changes and says a real run would stop.
-- A real write is refused unless the authenticated org Id equals `SF_EXPECTED_ORG_ID` and `ODOO_PUBLIC_URL`
-  is set.
+  A dry run reports the same "would stop" and prints no changes for that object, because it cannot read
+  the current values without the fields.
+- A real run is refused before any write unless the connected org is a sandbox (`SF_REQUIRE_SANDBOX`, default
+  true), its Id matches `SF_EXPECTED_ORG_ID` when that is set, and `ODOO_PUBLIC_URL` is set. See
+  `docs/operations.md`.
 - `--dry-run` prints each record's field changes and writes nothing. It does not need `SF_WRITEBACK`.
 - **What Sales sees.** `Odoo_Sync_Error__c` carries only messages Sales can fix in Salesforce: VAT rejected,
   billing country or state not matched, unknown billing entity, no billing country, order not created

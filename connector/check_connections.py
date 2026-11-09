@@ -6,7 +6,7 @@ import sys
 
 from . import config
 from .odoo_client import OdooClient, OdooError
-from .sf_client import SalesforceClient, SalesforceError, get_session
+from .sf_client import SalesforceClient, SalesforceError, check_org, get_session
 
 STAGE_FILTER = f"StageName = '{config.STAGE_AWARD_WON}'"
 
@@ -30,6 +30,7 @@ def check_salesforce():
     session = get_session()
     sf = SalesforceClient(session)
     print(f"  instance {session.instance_url}, API v{sf.api_version}")
+    check_org(sf, dry_run=True)
     rows = sf.query(f"SELECT COUNT(Id) total FROM Opportunity WHERE {STAGE_FILTER}")
     print(f"  opportunities at stage 07: {rows[0]['total']}")
 

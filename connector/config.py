@@ -50,8 +50,12 @@ SF_CLIENT_SECRET = os.environ.get("SF_CLIENT_SECRET", "").strip()
 
 # Odoo -> Salesforce write-back (connector/sf_writeback.py). Nothing is written to Salesforce unless true.
 SF_WRITEBACK = os.environ.get("SF_WRITEBACK", "false").strip().lower() in ("1", "true", "yes")
-# Writes are refused unless the authenticated org Id (18 characters) is this one.
+# Optional. If set, a real run is refused unless the connected org Id (18 characters) is this one.
+# Set it for production. A sandbox refresh changes the org Id, so for a sandbox leave it empty or update it.
 SF_EXPECTED_ORG_ID = os.environ.get("SF_EXPECTED_ORG_ID", "").strip()
+# Default true: a real run (Odoo or Salesforce writes) is refused unless the connected Salesforce org
+# is a sandbox (Organization.IsSandbox). Set false only when the connector is pointed at production on purpose.
+SF_REQUIRE_SANDBOX = os.environ.get("SF_REQUIRE_SANDBOX", "true").strip().lower() in ("1", "true", "yes")
 # How users reach Odoo, for the Odoo_Record__c links written to Salesforce.
 ODOO_PUBLIC_URL = os.environ.get("ODOO_PUBLIC_URL", "").strip().rstrip("/")
 

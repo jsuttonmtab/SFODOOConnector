@@ -5,7 +5,7 @@ Odoo state, compares it with what Salesforce already holds, and writes only the 
 200 records per call (Composite sObject Collections). A failed write is reported and does not stop the
 Odoo sync. Rules: docs/field-mapping.md §5.1.
 
-Writes happen only when SF_WRITEBACK=true, and only to the org named by SF_EXPECTED_ORG_ID.
+Writes happen only when SF_WRITEBACK=true, and only after the org check in sf_client.check_org passes.
 --dry-run prints the field changes per record and writes nothing; it does not need SF_WRITEBACK.
 """
 from collections import Counter, defaultdict
@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from . import config
 from .odoo_client import OdooError
-from .sf_client import SalesforceError
+from .sf_client import SalesforceError, check_org
 
 BATCH = 200
 ERROR_MAX = 32000  # Odoo_Sync_Error__c is Long Text (32768 characters); room left for the truncation mark
@@ -134,21 +134,14 @@ class WriteBack:
             return False
         if not config.ODOO_PUBLIC_URL:
             raise SalesforceError("ODOO_PUBLIC_URL is not set (connector/.env)")
-        org = self.sf.session.org_id or "unknown"
-        matches = bool(config.SF_EXPECTED_ORG_ID) and org == config.SF_EXPECTED_ORG_ID
-        if self.dry_run:
-            print(f"Salesforce org {org}: {'matches' if matches else 'does not match'} SF_EXPECTED_ORG_ID")
-            return True
-        if not config.SF_EXPECTED_ORG_ID:
-            raise SalesforceError("SF_EXPECTED_ORG_ID is not set; nothing written to Salesforce")
-        if not matches:
-            raise SalesforceError(f"authenticated org {org} is not SF_EXPECTED_ORG_ID; nothing written to Salesforce")
+        check_org(self.sf, self.dry_run, log=False)  # the run has already logged the org
         return True
 
     def _fields_ok(self, sobject):
         """True if every field write-back needs exists on the object, with the right type, and is
-        updateable. Field names are matched without regard to case, as Salesforce does. On a real run
-        a failing object is skipped; a dry run still prints its planned changes, marked as stopped."""
+        updateable. Field names are matched without regard to case, as Salesforce does. A failing object
+        is skipped in a real run and in a dry run alike: its current values cannot be read without the
+        fields, so a dry run reports what a real run would stop on, and nothing more."""
         if sobject not in self.fields_ok:
             described = {f["name"].lower(): f for f in self.sf.describe(sobject)["fields"]}
             problems = []
@@ -163,7 +156,7 @@ class WriteBack:
             verb = "would stop" if self.dry_run else "stopped"
             for problem in problems:
                 print(f"Salesforce write-back for {sobject} {verb}: {problem}")
-            self.fields_ok[sobject] = not problems or self.dry_run
+            self.fields_ok[sobject] = not problems
         return self.fields_ok[sobject]
 
     # ----- reads -----

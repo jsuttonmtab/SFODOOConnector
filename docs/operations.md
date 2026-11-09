@@ -63,7 +63,8 @@ ODOO_PUBLIC_URL=<URL users open Odoo at, for the links on Salesforce records>
 SF_LOGIN_URL=<My Domain login URL of the sandbox>
 SF_CLIENT_ID=<consumer key of the External Client App "Odoo Integration">
 SF_CLIENT_SECRET=<consumer secret of the same app>
-SF_EXPECTED_ORG_ID=<18-character Id of the org the write-back may write to>
+SF_EXPECTED_ORG_ID=<optional: 18-character org Id a real run must match; set it for production>
+SF_REQUIRE_SANDBOX=true
 SF_WRITEBACK=false
 SF_TARGET_ORG=mtab-sandbox
 FINANCE_ACTIVITY_USER=<Odoo login of the Finance user>
@@ -194,7 +195,8 @@ quantities back to Salesforce. Rules: `docs/field-mapping.md` §5.1. It is off u
 
 **Before the first real write**
 
-1. `python -m connector.check_connections`: Salesforce must show the expected org and log in.
+1. `python -m connector.check_connections`: Salesforce must log in, and the org line must show the org
+   you expect with `sandbox: True`.
 2. `python -m connector.sync_accounts --dry-run` and `python -m connector.sync_orders --dry-run`.
    Each prints `[dry-run] would update <Object> <Id> ...` lines and a
    `Salesforce write-back (dry run, ...)` summary. Nothing is written.
@@ -215,7 +217,21 @@ quantities back to Salesforce. Rules: `docs/field-mapping.md` §5.1. It is off u
 **Safety settings**
 
 - `SF_WRITEBACK=false` (the default): no writes, dry runs still work.
-- `SF_EXPECTED_ORG_ID`: a real write is refused unless the login's org Id matches.
+- `SF_REQUIRE_SANDBOX` (default `true`): before any Odoo or Salesforce write, the run reads
+  `Organization` and refuses unless `IsSandbox` is true. Set it to `false` only when the connector is
+  pointed at production on purpose.
+- `SF_EXPECTED_ORG_ID` (optional): if set, a real run is refused unless the org Id matches. Set it for
+  production. A sandbox refresh changes the sandbox's org Id, so for a sandbox either leave it empty
+  or update it after the refresh.
+- Every run logs the org Id, name and sandbox flag first. A dry run also prints
+  `[dry-run] a real run would refuse: ...` when a real run would stop.
+
+**Sandbox refresh.** A refresh gives the sandbox a new org Id, and removes any custom field that is not
+in the deployed metadata. After a refresh, expect:
+- A refused real run if `SF_EXPECTED_ORG_ID` still has the old Id.
+- `Salesforce write-back for <Object> would stop` (or `stopped`) with `does not exist or is not visible`
+  for the `Odoo_*` fields. The field check reports it; the object is skipped until the fields are
+  redeployed. The Odoo side still runs.
 - `ODOO_PUBLIC_URL`: required; the record links are built from it.
 - `SF_MIN_VISIBLE_RATIO` (default 0.9): a run stops, with exit 1 and no change, when Salesforce returns
   no accounts, opportunities or lines, or fewer opportunities than this share of the Odoo orders.

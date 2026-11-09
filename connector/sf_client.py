@@ -133,6 +133,41 @@ def require_visible(what, found, expected=None):
             "before any change. Check the integration user's record access.")
 
 
+def organization(sf):
+    """The connected org (Id, Name, IsSandbox). Read once per session and kept on it."""
+    if not hasattr(sf.session, "organization"):
+        rows = sf.query("SELECT Id, IsSandbox, Name FROM Organization")
+        if len(rows) != 1:
+            raise SalesforceError(f"Organization query returned {len(rows)} rows, expected 1")
+        sf.session.organization = rows[0]
+    return sf.session.organization
+
+
+def check_org(sf, dry_run, log=True):
+    """Check the connected org against the settings. Call before any Odoo or Salesforce write.
+
+    With log=True, prints the org Id, name and sandbox flag. A real run is refused (SalesforceError,
+    nothing changed) unless the org is a sandbox, when SF_REQUIRE_SANDBOX is true, and its Id matches
+    SF_EXPECTED_ORG_ID, when that is set. A dry run only reports what a real run would refuse.
+    """
+    org = organization(sf)
+    if log:
+        print(f"Salesforce org {org['Id']} ({org['Name']}), sandbox: {org['IsSandbox']}")
+    problems = []
+    if config.SF_REQUIRE_SANDBOX and not org["IsSandbox"]:
+        problems.append("the org is not a sandbox (SF_REQUIRE_SANDBOX is true)")
+    if config.SF_EXPECTED_ORG_ID and org["Id"] != config.SF_EXPECTED_ORG_ID:
+        problems.append(f"the org Id is not SF_EXPECTED_ORG_ID ({config.SF_EXPECTED_ORG_ID})")
+    if problems:
+        message = "; ".join(problems)
+        if dry_run:
+            if log:
+                print(f"[dry-run] a real run would refuse: {message}")
+            return org
+        raise SalesforceError(f"refusing to run: {message}. Nothing was changed.")
+    return org
+
+
 class SalesforceClient:
     def __init__(self, session):
         self.session = session
