@@ -256,7 +256,10 @@ class AccountSync:
 
     def report(self, action, acc, detail=""):
         prefix = "[dry-run] would " if self.dry_run else ""
-        role = " (parent)" if acc["Id"] in self.parent_ids else ""
+        # Log label only. The Odoo name is always the Salesforce name, so the suffix is added here only
+        # when the name does not already end with it (any case).
+        already = acc["Name"].strip().lower().endswith("(parent)")
+        role = " (parent)" if acc["Id"] in self.parent_ids and not already else ""
         print(f"{prefix}{action}: {acc['Id']} {acc['Name']}{role}" + (f" | {detail}" if detail else ""))
 
     def warn(self, kind, detail, acc=None):
@@ -579,6 +582,7 @@ def purge_sandbox(odoo, dry_run):
 
 
 def main(argv=None):
+    config.use_utf8_output()
     parser = argparse.ArgumentParser(description="Sync Salesforce Accounts to Odoo customers.")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would change; write nothing to Odoo")

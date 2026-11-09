@@ -4,6 +4,7 @@ Connection settings come from connector/.env (or the real environment, which win
 Mapping tables mirror docs/field-mapping.md.
 """
 import os
+import sys
 from pathlib import Path
 
 ENV_FILE = Path(__file__).resolve().parent / ".env"
@@ -22,6 +23,14 @@ def load_env(path=ENV_FILE):
 
 
 load_env()
+
+
+def use_utf8_output():
+    """Print as UTF-8, and replace what cannot be encoded, so redirected output (a log file, the cron
+    log) cannot crash on a character such as an arrow. Windows defaults redirected output to cp1252."""
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
+
 
 # Odoo 19 JSON-2 API. The API key identifies the user, so no login is needed.
 ODOO_URL = os.environ.get("ODOO_URL", "")

@@ -35,6 +35,7 @@ def check_salesforce():
 
 
 def main():
+    config.use_utf8_output()
     failed = False
     for name, check in (("Odoo", check_odoo), ("Salesforce", check_salesforce)):
         print(f"{name}:")

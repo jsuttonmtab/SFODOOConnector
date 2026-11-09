@@ -540,6 +540,7 @@ PENDING_PARTNER = PENDING  # marker for a customer that only exists in this dry 
 
 
 def main(argv=None):
+    config.use_utf8_output()
     parser = argparse.ArgumentParser(
         description="Sync Salesforce Opportunities to Odoo sales orders (headers and lines).")
     parser.add_argument("--dry-run", action="store_true",
