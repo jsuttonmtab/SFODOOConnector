@@ -56,6 +56,14 @@ SF_EXPECTED_ORG_ID = os.environ.get("SF_EXPECTED_ORG_ID", "").strip()
 # Default true: a real run (Odoo or Salesforce writes) is refused unless the connected Salesforce org
 # is a sandbox (Organization.IsSandbox). Set false only when the connector is pointed at production on purpose.
 SF_REQUIRE_SANDBOX = os.environ.get("SF_REQUIRE_SANDBOX", "true").strip().lower() in ("1", "true", "yes")
+
+# Removal brake (sync_orders.plan_brakes, docs/field-mapping.md §4.4). Odoo lines that Salesforce no
+# longer lists are removed (quantity 0). When a run would remove too many, the removals are skipped.
+# Per opportunity: more than SF_MAX_REMOVE_LINES, or more than SF_MAX_REMOVE_RATIO of its lines not
+# already removed. Per run: more than SF_MAX_REMOVE_TOTAL. A run with a global brake exits with code 2.
+SF_MAX_REMOVE_LINES = int(os.environ.get("SF_MAX_REMOVE_LINES", "5"))
+SF_MAX_REMOVE_RATIO = float(os.environ.get("SF_MAX_REMOVE_RATIO", "0.3"))
+SF_MAX_REMOVE_TOTAL = int(os.environ.get("SF_MAX_REMOVE_TOTAL", "50"))
 # How users reach Odoo, for the Odoo_Record__c links written to Salesforce.
 ODOO_PUBLIC_URL = os.environ.get("ODOO_PUBLIC_URL", "").strip().rstrip("/")
 
@@ -87,6 +95,8 @@ SF_VISIBLE_ISSUES = (
     "has no product",                # line has no product
     "line not created",              # line not created
     "stage moved out of",            # opportunity left Award Won: order not changed (§4.6)
+    "products missing from Salesforce compared with Odoo; not removed.",          # removal brake, opportunity (§4.4)
+    "products missing from Salesforce compared with Odoo; not removed in this run",  # removal brake, whole run (§4.4)
 )
 
 # §4.6: login of the Odoo user who gets the To Do when a synced opportunity leaves Award Won.

@@ -85,11 +85,14 @@ def address_key(street, city, zip_code, state_id, country_id):
 
 
 class OrderSync(AccountSync):
-    def __init__(self, odoo, dry_run):
+    def __init__(self, odoo, dry_run, allow_mass_removal=False):
         super().__init__(odoo, dry_run)
         self.counts = Counter()
         self.sf_lines = {}  # opportunity Id -> OpportunityLineItems
         self.lines = None
+        self.allow_mass_removal = allow_mass_removal  # --allow-mass-removal: turns both brakes off
+        self.brake = set()         # opportunity Ids whose removals are skipped this run
+        self.global_brake = False  # True: no removals at all this run
 
     # ----- reference data -----
 
@@ -260,6 +263,7 @@ class OrderSync(AccountSync):
         self.load_partners()
         self.load_invoice_addresses()
         self.check_currencies(opps)
+        self.plan_brakes(opps)
 
         seen = set()
         for opp in opps:
@@ -283,6 +287,49 @@ class OrderSync(AccountSync):
 
         self.summary()
 
+    def plan_brakes(self, opps):
+        """Before any write: work out the removals each opportunity would make, and brake the ones that
+        are too large (docs/field-mapping.md §4.4). An opportunity is braked when its removals exceed
+        SF_MAX_REMOVE_LINES, or SF_MAX_REMOVE_RATIO of its lines not already removed. When the removals of
+        the whole run exceed SF_MAX_REMOVE_TOTAL, no removal is applied in the run. A braked opportunity
+        keeps its lines, and its Odoo_Sync_Error__c says so. --allow-mass-removal turns both brakes off."""
+        planned = {}  # opportunity Id -> (opportunity, removals, lines not already removed)
+        for opp in opps:
+            order = self.orders.get(opp["Id"])
+            if not order:
+                continue
+            sf_ids = {line["Id"] for line in self.sf_lines.get(opp["Id"], [])}
+            removals = self.lines.removal_candidates(order["id"], sf_ids)
+            if removals:
+                kept = sum(1 for rec in self.lines.by_order.get(order["id"], []) if not rec["sf_removed_in_sf"])
+                planned[opp["Id"]] = (opp, len(removals), kept)
+        if self.allow_mass_removal:
+            print("--allow-mass-removal: removal brakes are off for this run")
+            return
+
+        for opp, n, kept in planned.values():
+            if n > config.SF_MAX_REMOVE_LINES or n > config.SF_MAX_REMOVE_RATIO * kept:
+                self.brake.add(opp["Id"])
+                self.counts["opps_braked"] += 1
+                print(f"REMOVAL BRAKE {opp['Id']} {opp['Name']}: {n} products missing from Salesforce "
+                      f"({kept} lines in Odoo); not removed.")
+                self.issues[opp["Id"]].append(f"{n} products missing from Salesforce compared with Odoo; "
+                                              "not removed. Finance to review.")
+
+        total = sum(n for _, n, _ in planned.values())
+        if total > config.SF_MAX_REMOVE_TOTAL:
+            self.global_brake = True
+            print(f"REMOVAL BRAKE (run): {total} lines would be removed in this run, more than "
+                  f"SF_MAX_REMOVE_TOTAL ({config.SF_MAX_REMOVE_TOTAL}). No removals are applied this run.")
+            for opp, n, _ in planned.values():
+                self.counts["opps_removals_skipped"] += 1
+                if opp["Id"] not in self.brake:
+                    self.issues[opp["Id"]].append(f"{n} products missing from Salesforce compared with Odoo; "
+                                                  "not removed in this run (run total over the limit). Finance to review.")
+
+    def removals_allowed(self, opp_id):
+        return not self.global_brake and opp_id not in self.brake
+
     def create_or_update(self, opp, existing):
         sf_lines = self.sf_lines.get(opp["Id"], [])
         if existing and self.lines.blocked(existing["id"], {line["Id"] for line in sf_lines}):
@@ -292,7 +339,8 @@ class OrderSync(AccountSync):
             self.note_back_at_award_won(opp, existing)
         ok, order_id = self.sync_header(opp, existing)
         if ok:
-            self.lines.sync(opp, order_id, sf_lines, new_order=existing is None)
+            self.lines.sync(opp, order_id, sf_lines, new_order=existing is None,
+                            allow_removals=self.removals_allowed(opp["Id"]))
 
     def note_back_at_award_won(self, opp, existing):
         """Mark on the order that its opportunity is back at Award Won. Notes for a later reversal
@@ -529,6 +577,8 @@ class OrderSync(AccountSync):
             f"already open {c['activities_already_open']}, back-at-Award-Won notes {c['back_notes_posted']}), "
             f"lines created {c['lines_created']}, updated {c['lines_updated']}, "
             f"unchanged {c['lines_unchanged']}, removed {c['lines_removed']}, "
+            f"removal brake: {c['opps_braked']} opportunities braked, "
+            f"run brake {'ON, removals skipped for ' + str(c['opps_removals_skipped']) + ' opportunities' if self.global_brake else 'off'}, "
             f"line change notes {c['line_notes_posted']}, "
             f"products created {c['products_created']}, "
             f"invoice addresses created {c['invoice_addresses_created']}, "
@@ -547,13 +597,19 @@ def main(argv=None):
                         help="report what would change; write nothing to Odoo")
     parser.add_argument("--opportunity", metavar="SF_ID",
                         help="sync only this opportunity (for checks on one order)")
+    parser.add_argument("--allow-mass-removal", action="store_true",
+                        help="apply the removals the removal brake would skip. Needs --opportunity: use it for "
+                             "one opportunity a person has checked")
     args = parser.parse_args(argv)
+    if args.allow_mass_removal and not args.opportunity:
+        print("ERROR --allow-mass-removal needs --opportunity (one opportunity a person has checked)")
+        return 1
 
     try:
         odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY)
         sf = SalesforceClient(get_session())
         check_org(sf, args.dry_run)
-        sync = OrderSync(odoo, args.dry_run)
+        sync = OrderSync(odoo, args.dry_run, allow_mass_removal=args.allow_mass_removal)
         sync.load_reference()
         sync.load_orders()
 
@@ -607,6 +663,9 @@ def main(argv=None):
         return 1
     # After the Odoo side, so a Salesforce problem cannot stop the Odoo sync.
     write_opportunities(sf, odoo, args.dry_run, opps, sync.issues, sync.sf_lines)
+    if sync.global_brake:
+        print("EXIT 2: the run brake stopped removals in this run. Review the removal brake lines above.")
+        return 2
     return 0
 
 

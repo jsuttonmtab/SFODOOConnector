@@ -226,6 +226,17 @@ quantities back to Salesforce. Rules: `docs/field-mapping.md` §5.1. It is off u
 - Every run logs the org Id, name and sandbox flag first. A dry run also prints
   `[dry-run] a real run would refuse: ...` when a real run would stop.
 
+**Removal brake.** A sync run never removes many lines at once. Limits (docs/field-mapping.md §4.4):
+- `SF_MAX_REMOVE_LINES` (default 5) and `SF_MAX_REMOVE_RATIO` (default 0.3): more than this for one
+  opportunity skips that opportunity's removals. The log says `REMOVAL BRAKE <Id> <Name>: ...`, and the
+  opportunity's `Odoo_Sync_Error__c` says `N products missing from Salesforce ... Finance to review.`
+- `SF_MAX_REMOVE_TOTAL` (default 50): more than this in one run skips every removal in the run. The sync
+  still completes, the write-back runs, and the run **exits with code 2**. The cron log then shows
+  `EXIT 2: the run brake stopped removals`. Treat exit 2 as an alert.
+- `--allow-mass-removal --opportunity <SF_ID>`: applies the removals the brakes skip, for one opportunity
+  a person has checked. It is refused without `--opportunity`. Check the dry run for that opportunity
+  first.
+
 **Sandbox refresh.** A refresh gives the sandbox a new org Id, and removes any custom field that is not
 in the deployed metadata. After a refresh, expect:
 - A refused real run if `SF_EXPECTED_ORG_ID` still has the old Id.

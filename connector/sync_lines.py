@@ -264,10 +264,18 @@ class LineSync:
         self.odoo.call("sale.order", "message_post", ids=[order_id], body=html.escape(body),
                        message_type="comment", subtype_xmlid="mail.mt_note")
 
-    def sync(self, opp, order_id, sf_lines, new_order=False):
+    def removal_candidates(self, order_id, sf_ids):
+        """Odoo lines of the order whose Salesforce line is no longer listed and that are not already
+        removed (§4.4). These are the removals the brake counts."""
+        return [rec for rec in self.by_order.get(order_id, [])
+                if rec["sf_line_id"] not in sf_ids
+                and not (rec["product_uom_qty"] == 0 and rec["sf_removed_in_sf"])]
+
+    def sync(self, opp, order_id, sf_lines, new_order=False, allow_removals=True):
         """Create, update and remove lines of one order. order_id is None only in a dry run for a
         new order, where the lines are counted but not created. Changes to an existing order are
-        posted as ONE note per run; a new order gets no note."""
+        posted as ONE note per run; a new order gets no note. allow_removals False (the removal brake)
+        skips the removals of this order; creates and updates still apply."""
         existing = {rec["sf_line_id"]: rec for rec in self.by_order.get(order_id, [])} if order_id else {}
         sf_ids = {line["Id"] for line in sf_lines}
         currency = opp.get("CurrencyIsoCode")
@@ -307,16 +315,14 @@ class LineSync:
                 update_parts.append(part)
 
         # §4.4: lines no longer in Salesforce. Delivered ones were blocked before the order was touched.
-        for sf_id, rec in existing.items():
-            if sf_id in sf_ids:
-                continue
-            if rec["product_uom_qty"] == 0 and rec["sf_removed_in_sf"]:
-                continue
-            removed.append(sf_id)
-            if not self.dry_run:
-                self.odoo.write("sale.order.line", [rec["id"]], {"product_uom_qty": 0.0, "sf_removed_in_sf": True})
-            self.counts["lines_removed"] += 1
-            removed_parts.append(f"{self.odoo_product_name(rec)} — removed in Salesforce (quantity → 0).")
+        # The brake (allow_removals False) leaves them as they are.
+        if allow_removals:
+            for rec in self.removal_candidates(order_id, sf_ids):
+                removed.append(rec["sf_line_id"])
+                if not self.dry_run:
+                    self.odoo.write("sale.order.line", [rec["id"]], {"product_uom_qty": 0.0, "sf_removed_in_sf": True})
+                self.counts["lines_removed"] += 1
+                removed_parts.append(f"{self.odoo_product_name(rec)} — removed in Salesforce (quantity → 0).")
 
         if created or updated or removed:
             print(f"lines {opp['Id']} {opp['Name']}: create {len(created)}, update {len(updated)}, "

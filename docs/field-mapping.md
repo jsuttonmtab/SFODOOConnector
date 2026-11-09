@@ -270,6 +270,28 @@ queries. On every opportunity update, the connector compares the Odoo order's
 `sf_line_id`s with the current SF lines; any Odoo line whose SF line is gone is
 treated as removed.
 
+#### Removal brake (phase 1)
+
+Salesforce can briefly list fewer lines than Odoo holds, for example after a sandbox refresh or
+when some lines are not visible to the integration user. Without a brake, every missing line would
+be set to quantity 0. So, before any write, each run works out the removals each opportunity would
+make, and brakes the ones that are too large (`sync_orders.plan_brakes`):
+
+| Brake | Trigger | Effect |
+|---|---|---|
+| Per opportunity | removals of one opportunity > `SF_MAX_REMOVE_LINES` (default 5), or > `SF_MAX_REMOVE_RATIO` (default 0.3) of its lines not already removed | Skip **all** removals for that opportunity this run. Creates and updates still apply. The order keeps its lines. |
+| Per run | removals of the whole run > `SF_MAX_REMOVE_TOTAL` (default 50) | Skip **all** removals in the run. The rest of the sync completes, then the run exits with code 2. |
+
+- Each braked opportunity logs `REMOVAL BRAKE <Id> <Name>: N products missing from Salesforce (M lines in Odoo); not removed.`
+  and gets a Sales-visible message on `Odoo_Sync_Error__c`: "N products missing from Salesforce compared with Odoo;
+  not removed. Finance to review." Under the run brake, every opportunity with planned removals gets the same
+  message, worded "not removed in this run".
+- A one-line opportunity whose only line is missing is braked too (100% of its lines).
+- `--allow-mass-removal` turns both brakes off. It needs `--opportunity`, so a person chooses one
+  opportunity and checks its removals first.
+- Nothing is removed for a new order (it has no lines to remove), and a delivered removed line still
+  fails the order (above). The brake only adds a second, earlier stop.
+
 #### Other locked-field rules
 
 | Rule | Check |
