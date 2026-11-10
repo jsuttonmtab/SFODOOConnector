@@ -166,9 +166,10 @@ def diff(record, vals, m2o_fields=M2O_FIELDS):
 
 
 def show(value):
+    """Value for a message or a log line, in full. Line breaks become ' | ' so each record stays on one line."""
     if value is False or value is None or value == "":
         return "-"
-    return str(value)[:60]
+    return str(value).replace("\n", " | ")
 
 
 def address_key(acc, prefix):

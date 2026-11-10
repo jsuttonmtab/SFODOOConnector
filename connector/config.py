@@ -71,6 +71,12 @@ ODOO_PUBLIC_URL = os.environ.get("ODOO_PUBLIC_URL", "").strip().rstrip("/")
 # of the opportunities Odoo expects.
 SF_MIN_VISIBLE_RATIO = float(os.environ.get("SF_MIN_VISIBLE_RATIO", "0.9"))
 
+# Shown to Sales only for accounts that have at least one synced opportunity (a sale order with an
+# sf_opportunity_id), since only those can be invoiced. Pure parent or group accounts keep them in the log.
+SF_VISIBLE_IF_ORDERED = (
+    "no billing country",            # account has no billing country (4.1a)
+)
+
 # Odoo_Sync_Error__c (sf_writeback.py): only the messages whose text contains one of these is written
 # to Salesforce. Everything else stays in the sync log. Matched as plain substrings, case-sensitive.
 # Add a phrase here to show a message to Sales; remove it to keep one internal.
@@ -80,7 +86,6 @@ SF_VISIBLE_ISSUES = (
     "unknown billing entity",        # billing entity picklist value with no Odoo company
     "billing country not matched",   # account billing country
     "billing state not matched",     # account billing state (and opportunity billing state)
-    "no billing country",            # account has no billing country
     "opportunity billing country",   # opportunity billing country missing or not matched
     "not created:",                  # order not created: the reasons are listed after it
     "payment terms not set",         # opportunity has no payment terms

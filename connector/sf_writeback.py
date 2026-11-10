@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 from . import config
-from .odoo_client import OdooError
+from .odoo_client import OdooError, m2o_id
 from .sf_client import SalesforceError, check_org
 
 BATCH = 200
@@ -51,9 +51,11 @@ def _soql(value):
 
 
 def _show(value):
+    """Value for the dry-run and log lines. Shown in full (a message is what is written to Salesforce);
+    line breaks become ' | ' so each record stays on one line."""
     if value is None or value is False or value == "":
         return "-"
-    return str(value)[:60]
+    return str(value).replace("\n", " | ")
 
 
 def _norm(field, value):
@@ -89,9 +91,16 @@ def _error_text(messages):
     return text or None
 
 
-def _visible(messages):
-    """The messages Sales can act on in Salesforce. The classification is config.SF_VISIBLE_ISSUES."""
-    return [m for m in messages if any(p in m for p in config.SF_VISIBLE_ISSUES)]
+def _visible(messages, has_order=True):
+    """The messages Sales can act on in Salesforce. The classification is in config: SF_VISIBLE_ISSUES
+    always, SF_VISIBLE_IF_ORDERED only when the record has a synced order (has_order)."""
+    shown = []
+    for m in messages:
+        if any(p in m for p in config.SF_VISIBLE_ISSUES):
+            shown.append(m)
+        elif has_order and any(p in m for p in config.SF_VISIBLE_IF_ORDERED):
+            shown.append(m)
+    return shown
 
 
 def _line_values(rec):
@@ -179,12 +188,14 @@ class WriteBack:
 
     # ----- planning and sending -----
 
-    def _plan(self, sobject, sf_id, label, current, desired, stamp=False):
+    def _plan(self, sobject, sf_id, label, current, desired, stamp=False, count_unchanged=True):
         """Queue the record if any wanted value differs. stamp: also set Odoo_Last_Sync__c, which is
-        done only when something else on the record changes."""
+        done only when something else on the record changes. count_unchanged False: a record with no
+        Odoo record yet is counted under "no Odoo record", not as unchanged."""
         changes = _changes(current, desired)
         if not changes:
-            self.counts[(sobject, "unchanged")] += 1
+            if count_unchanged:
+                self.counts[(sobject, "unchanged")] += 1
             return
         if stamp:
             changes["Odoo_Last_Sync__c"] = self.now
@@ -218,13 +229,13 @@ class WriteBack:
 
     # ----- objects -----
 
-    def _error_counts(self, sobject, messages):
+    def _error_counts(self, sobject, messages, has_order=True):
         """Tally one record for the dry-run report: whether its Odoo_Sync_Error__c would be non-blank
         with every message (before) and with the Sales-visible ones only (after)."""
         self.counts[(sobject, "error checked")] += 1
         if messages:
             self.counts[(sobject, "error before")] += 1
-        if _visible(messages):
+        if _visible(messages, has_order):
             self.counts[(sobject, "error after")] += 1
 
     def accounts(self, records, issues):
@@ -235,18 +246,24 @@ class WriteBack:
         ids = [r["Id"] for r in records]
         partners = {r["sf_account_id"]: r["id"] for r in self._odoo_rows(
             "res.partner", "sf_account_id", ids, ["id", "sf_account_id"], [("active", "in", [True, False])])}
+        # Partners with a synced opportunity: a sale order carrying an sf_opportunity_id.
+        ordered = {m2o_id(r["partner_id"]) for r in self._odoo_rows(
+            "sale.order", "partner_id", list(partners.values()), ["partner_id"],
+            [("sf_opportunity_id", "!=", False)])}
         current = self._current("Account", ids)
         for rec in records:
             sf_id = rec["Id"]
             messages = issues.get(sf_id, [])
-            self._error_counts("Account", messages)
-            desired = {"Odoo_Sync_Error__c": _error_text(_visible(messages))}
+            has_order = partners.get(sf_id) in ordered
+            self._error_counts("Account", messages, has_order)
+            desired = {"Odoo_Sync_Error__c": _error_text(_visible(messages, has_order))}
             if sf_id in partners:
                 desired["Odoo_ID__c"] = partners[sf_id]
                 desired["Odoo_Record__c"] = f"{config.ODOO_PUBLIC_URL}/odoo/contacts/{partners[sf_id]}"
             else:
                 self.counts[("Account", "no Odoo record")] += 1
-            self._plan("Account", sf_id, rec["Name"], current.get(sf_id, {}), desired, stamp=True)
+            self._plan("Account", sf_id, rec["Name"], current.get(sf_id, {}), desired, stamp=True,
+                       count_unchanged=sf_id in partners)
         self._flush("Account")
 
     def opportunities(self, opps, issues, sf_lines):

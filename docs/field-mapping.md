@@ -406,13 +406,18 @@ Salesforce unless `SF_WRITEBACK=true`. Field names are the org's spelling (`Odoo
   `docs/operations.md`.
 - `--dry-run` prints each record's field changes and writes nothing. It does not need `SF_WRITEBACK`.
 - **What Sales sees.** `Odoo_Sync_Error__c` carries only messages Sales can fix in Salesforce: VAT rejected,
-  billing country or state not matched, unknown billing entity, no billing country, order not created
+  billing country or state not matched, unknown billing entity, order not created
   (with its reasons), locked field change rejected, removal blocked on a delivered line, line failures,
-  and the stage reversal. Internal messages stay in the log only: no Odoo user for owner or account
-  manager, Odoo company or payment term not found in Odoo, multiple pricelists, products auto-created,
-  parent not synced, deliverables project not set, shipping address not matched, errors from Odoo itself.
-  The list is `SF_VISIBLE_ISSUES` in `config.py`. A dry run prints how many records would get a non-blank
-  value with every message and with the visible ones only.
+  the stage reversal, and the removal brake (§4.4). "No billing country" is shown only for an account
+  that has a synced order, because only those can be invoiced; a pure parent or group account keeps it
+  in the log. Internal messages stay in the log only: no Odoo user for owner or account manager, Odoo
+  company or payment term not found in Odoo, multiple pricelists, products auto-created, parent not
+  synced, deliverables project not set, shipping address not matched, errors from Odoo itself.
+  The lists are `SF_VISIBLE_ISSUES` and `SF_VISIBLE_IF_ORDERED` in `config.py`. A dry run prints how many
+  records would get a non-blank value with every message and with the visible ones only.
+- **Full text.** The value written to `Odoo_Sync_Error__c` is the complete message, up to 32,000
+  characters, and is never cut to fit the display. The dry-run and log lines show the full text too, with
+  line breaks shown as ` | `.
 - **Safety guard.** Before any Odoo write, each run checks what Salesforce returned. It stops with exit 1
   and makes no change (no reversals, no removals, no write-back) when: no accounts, no stage 07/Closed
   opportunities, no order lines, or fewer opportunities than `SF_MIN_VISIBLE_RATIO` (default 0.9) of the
