@@ -121,7 +121,7 @@ from `x_country` and is harmless.
 | `Id` | `sf_line_id` | NEW | Upsert key per line. Also copied to `lb.item.deliverable.sf_opportunity_line_id` (already exists there). |
 | `celigo_sfnsio__NetSuite_Line_Id__c` | — | NOT SYNCED | Legacy Celigo key, replaced by `sf_line_id`. Revisit only if NetSuite orders are migrated. |
 | `Product2Id` (→ `Product2.ProductCode`, `Product2.Name`) | `product_id` | LOOKUP (2026-10-28) | See the product rule below the table. Matched by Salesforce Id first (`product.template.sf_product_id`). Only when no product has that Id: by product code (`default_code`), then by name, and the match is stamped with the Id. Not found and `AUTO_CREATE_PRODUCTS` off: the line cannot be synced and **the whole order fails** with a Sales-visible message naming the product. |
-| `Combined_Product_Description__c` | `name` | OK | Line description. Locked once delivered/invoiced. |
+| `Combined_Product_Description__c` | `name` | OK | Line description. Locked once delivered/invoiced. A change is written and listed in the line change note as "description: old → new". With `SF_HOLD_NAME_UPDATES=true` (set 2026-11-12) the change is logged and not written. |
 | `Quantity` | `product_uom_qty` | OK | Cannot go below `qty_delivered`. |
 | `Total_Billable_Amount__c` | `price_unit` | OK | Ignored (price 0) on information-only lines. **Per unit**, not a line total: SF's own formula `Total_Billable_Amount_Quantity__c = Total_Billable_Amount__c * Quantity` proves it. Map straight to `price_unit`. Locked once `qty_invoiced > 0`. |
 | `Discount` | — | **Not in SF** | No discount field exists on OpportunityLineItem (or it's hidden from this user). `discount` stays 0; the billable amount is already net. |

@@ -130,6 +130,15 @@ INTEGRITY = "FIELD_INTEGRITY_EXCEPTION"
 MESSAGE_SHOWN = 300  # characters of an error message shown in the run summary
 
 
+def _field_map(sf, sobject):
+    """The object's fields from describe, keyed by lower-case API name. Read once per run: the cache sits on the
+    Salesforce session, so the accounts and the opportunity write-backs share one describe per object."""
+    cache = sf.session.__dict__.setdefault("field_maps", {})
+    if sobject not in cache:
+        cache[sobject] = {f["name"].lower(): f for f in sf.describe(sobject)["fields"]}
+    return cache[sobject]
+
+
 def _opportunity_ids(messages):
     """Opportunity Ids named in the error messages, each once, in order of appearance."""
     found = []
@@ -164,11 +173,13 @@ class WriteBack:
 
     def _fields_ok(self, sobject):
         """True if every field write-back needs exists on the object, with the right type, and is
-        updateable. Field names are matched without regard to case, as Salesforce does. A failing object
-        is skipped in a real run and in a dry run alike: its current values cannot be read without the
+        updateable. Names are matched without regard to case, as Salesforce does. The org's own API name of
+        each field is taken from describe (see _api). A case difference is announced once per run. A failing
+        object is skipped in a real run and in a dry run alike: its current values cannot be read without the
         fields, so a dry run reports what a real run would stop on, and nothing more."""
         if sobject not in self.fields_ok:
-            described = {f["name"].lower(): f for f in self.sf.describe(sobject)["fields"]}
+            described = _field_map(self.sf, sobject)
+            announced = self.sf.session.__dict__.setdefault("announced_case", set())
             problems = []
             for name, sf_type in REQUIRED[sobject].items():
                 field = described.get(name.lower())
@@ -178,22 +189,32 @@ class WriteBack:
                     problems.append(f"{name} is {field['type']}, expected {sf_type}")
                 elif not field["updateable"]:
                     problems.append(f"{name} is not updateable by the integration user")
+                elif field["name"] != name and (sobject, name) not in announced:
+                    announced.add((sobject, name))
+                    print(f"Salesforce field name for {sobject}: {name} is {field['name']} in this org (case differs)")
             verb = "would stop" if self.dry_run else "stopped"
             for problem in problems:
                 print(f"Salesforce write-back for {sobject} {verb}: {problem}")
             self.fields_ok[sobject] = not problems
         return self.fields_ok[sobject]
 
+    def _api(self, sobject, name):
+        """The org's API name of a configured field, as describe returns it. Lookup ignores case."""
+        return _field_map(self.sf, sobject)[name.lower()]["name"]
+
     # ----- reads -----
 
     def _current(self, sobject, ids):
-        """Current Salesforce values of the given records: Id -> record."""
-        fields = ", ".join(REQUIRED[sobject])
+        """Current Salesforce values of the given records: Id -> {configured field name: value}. The SOQL and
+        the results use the org's API names, so a difference in case from the configured name cannot make a
+        record look blank. The result is keyed by the configured names, as _changes expects."""
+        actual = {field: self._api(sobject, field) for field in REQUIRED[sobject]}
+        fields = ", ".join(actual.values())
         rows = {}
         for chunk in _chunks(ids, BATCH):
             id_list = ", ".join(_soql(i) for i in chunk)
             for row in self.sf.query(f"SELECT Id, {fields} FROM {sobject} WHERE Id IN ({id_list})"):
-                rows[row["Id"]] = row
+                rows[row["Id"]] = {"Id": row["Id"], **{field: row.get(name) for field, name in actual.items()}}
         return rows
 
     def _odoo_rows(self, model, field, values, fields, extra_domain=()):
@@ -208,7 +229,8 @@ class WriteBack:
         """Queue the record if any wanted value differs. stamp: also set Odoo_Last_Sync__c, which is
         done only when something else on the record changes. count_unchanged False: a record with no
         Odoo record yet is counted under "no Odoo record", not as unchanged. group: records with the same
-        group are sent in the same Salesforce call (the lines of one opportunity)."""
+        group are sent in the same Salesforce call (the lines of one opportunity). The PATCH body uses the
+        org's API names."""
         self.labels[(sobject, sf_id)] = label
         changes = _changes(current, desired)
         if not changes:
@@ -222,7 +244,8 @@ class WriteBack:
         name = f" {label}" if label else ""
         print(f"{prefix} {sobject} {sf_id}{name}: {detail}")
         self.counts[(sobject, "planned")] += 1
-        payload = {"attributes": {"type": sobject}, "Id": sf_id, **changes}
+        payload = {"attributes": {"type": sobject}, "Id": sf_id,
+                   **{self._api(sobject, field): value for field, value in changes.items()}}
         self.pending[sobject].append((sf_id if group is None else group, payload))
 
     def _flush(self, sobject):
