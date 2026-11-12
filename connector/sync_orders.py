@@ -345,10 +345,13 @@ class OrderSync(AccountSync):
         if missing:
             self.order_error(opp, "order not synced: " + "; ".join(missing))
             return
+        # §4.6: a quotation this connector cancelled is reopened on return. If Odoo does not confirm the reopen,
+        # the order is left alone (reopen_quotation reports why).
+        if existing and existing.get("sf_cancelled_by_sync") and opp["StageName"] in (STAGE_AWARD_WON, STAGE_CLOSED):
+            if not self.reopen_quotation(opp, existing):
+                return
         if existing and existing.get("sf_stage") != STAGE_AWARD_WON and opp["StageName"] == STAGE_AWARD_WON:
             self.note_back_at_award_won(opp, existing)
-        if existing and existing.get("sf_cancelled_by_sync") and opp["StageName"] in (STAGE_AWARD_WON, STAGE_CLOSED):
-            self.reopen_quotation(opp, existing)
         ok, order_id = self.sync_header(opp, existing)
         if ok:
             self.lines.sync(opp, order_id, sf_lines, new_order=existing is None,
@@ -472,9 +475,10 @@ class OrderSync(AccountSync):
         """§4.6: the opportunity left Award Won. Acts only when the stage changed since the last run: an
         unchanged reversed order is counted silently. Two cases:
         - Unconfirmed quotation (draft or sent, or cancelled by this connector earlier): the quotation is
-          cancelled and a note says why. No To Do. It is reopened if the opportunity returns (reopen_quotation).
-        - Confirmed order, or a quotation cancelled by hand: the order is not changed. A note and a To Do
-          for the Finance user.
+          cancelled, and a note says why. No To Do. Odoo must confirm the cancel (cancel_quotation). If it
+          does not, the order takes the confirmed-order path below instead.
+        - Confirmed order, a quotation cancelled by hand, or a cancel Odoo did not confirm: the order is not
+          changed. A note and a To Do for the Finance user.
         Each step checks Odoo first, so a run that failed part-way finishes on the next run without duplicates.
         sf_stage is updated last."""
         new_stage = opp["StageName"]
@@ -483,11 +487,12 @@ class OrderSync(AccountSync):
             self.counts["reversed_unchanged"] += 1
             return
         self.counts["stage_reversals"] += 1
-        if self.is_unconfirmed(existing):
+        cancelled = self.is_unconfirmed(existing) and self.cancel_quotation(
+            opp, existing, show(old_stage), new_stage)
+        if cancelled:
             # Logged only: the Salesforce error text states the cancellation while it lasts (sf_writeback.py).
             self.warn("stage moved out of Award Won (quotation cancelled in Odoo)",
                       f"{opp['Id']} {opp['Name']}: {show(old_stage)} -> {new_stage}")
-            self.cancel_quotation(opp, existing, show(old_stage), new_stage)
         else:
             self.warn("stage moved out of Award Won (order not changed, review in Odoo)",
                       f"{opp['Id']} {opp['Name']}: {show(old_stage)} -> {new_stage}")
@@ -503,15 +508,32 @@ class OrderSync(AccountSync):
         state = existing.get("state")
         return state in ("draft", "sent") or (state == "cancel" and bool(existing.get("sf_cancelled_by_sync")))
 
+    def order_state(self, order_id):
+        """The order's state as Odoo holds it now, read back after a method call. None if not found."""
+        rows = self.odoo.search_read("sale.order", [("id", "=", order_id)], ["state"])
+        return rows[0]["state"] if rows else None
+
     def cancel_quotation(self, opp, existing, old_stage, new_stage):
-        """Cancel the unconfirmed quotation and post a note. The flag is written before the cancel, so a run
-        that fails in between sees the quotation as the connector's and does not treat it as cancelled by hand."""
+        """Cancel the unconfirmed quotation and post a note. Returns True only when Odoo confirms the state is
+        'cancel'. For a sent quotation, action_cancel can return a wizard (sale.order.cancel) instead of
+        cancelling: disable_cancel_warning skips it, and the state is read back to check. If it is not
+        cancelled, the flag is cleared again, an order error is reported, and False is returned; the caller
+        then takes the note + To Do path. The flag is written before the cancel, so a run that stops in
+        between still sees the quotation as the connector's."""
         order_id = existing["id"]
         if existing.get("state") != "cancel":
             self.report_order("cancel quotation", opp, f"{old_stage} -> {new_stage}")
             if not self.dry_run:
                 self.odoo.write("sale.order", [order_id], {"sf_cancelled_by_sync": True})
-                self.odoo.call("sale.order", "action_cancel", ids=[order_id])
+                self.odoo.call("sale.order", "action_cancel", ids=[order_id],
+                               context={"disable_cancel_warning": True})
+                state = self.order_state(order_id)
+                if state != "cancel":
+                    self.odoo.write("sale.order", [order_id], {"sf_cancelled_by_sync": False})
+                    existing["sf_cancelled_by_sync"] = False
+                    self.order_error(opp, f"could not cancel quotation (Odoo state is {state}); "
+                                          "order not changed, review in Odoo")
+                    return False
             existing["state"] = "cancel"
             existing["sf_cancelled_by_sync"] = True
             self.counts["quotations_cancelled"] += 1
@@ -526,19 +548,27 @@ class OrderSync(AccountSync):
                 self.odoo.call("sale.order", "message_post", ids=[order_id], body=body,
                                message_type="comment", subtype_xmlid="mail.mt_note")
             self.counts["notes_posted"] += 1
+        return True
 
     def reopen_quotation(self, opp, existing):
         """The opportunity is back at Award Won or Closed and this connector had cancelled its quotation:
-        set the same quotation back to draft, keep its number and history, and post a note. The header and
-        lines are then synced as usual. Only quotations the connector cancelled are reopened (the flag);
-        a quotation cancelled by hand never is. The state is set back before the flag is cleared, so a run
-        that fails in between still reopens it on the next run."""
+        set the same quotation back to draft, keep its number and history, post a note, and let the header
+        and lines sync as usual. Returns True only when the order is confirmed as 'draft'. Otherwise an order
+        error is reported, the flag stays set, and the order is left alone. Only quotations the connector
+        cancelled are reopened (the flag); a quotation cancelled by hand never is. The state is set back
+        before the flag is cleared, so a run that stops in between still reopens it on the next run."""
         order_id = existing["id"]
+        state = existing.get("state")
+        if not self.dry_run and state == "cancel":
+            self.odoo.call("sale.order", "action_draft", ids=[order_id])
+            state = self.order_state(order_id)
+        if not self.dry_run and state != "draft":
+            self.order_error(opp, f"could not reopen quotation (Odoo state is {state}); order not changed, "
+                                  "review in Odoo")
+            return False
         self.report_order("reopen quotation", opp, f"now {opp['StageName']}")
         self.counts["quotations_reopened"] += 1
         if not self.dry_run:
-            if existing.get("state") == "cancel":
-                self.odoo.call("sale.order", "action_draft", ids=[order_id])
             self.odoo.write("sale.order", [order_id], {"sf_cancelled_by_sync": False})
             self.odoo.call("sale.order", "message_post", ids=[order_id],
                            body=(f"Salesforce stage is {opp['StageName']}. The quotation cancelled by the "
@@ -546,6 +576,7 @@ class OrderSync(AccountSync):
                            message_type="comment", subtype_xmlid="mail.mt_note")
         existing["state"] = "draft"
         existing["sf_cancelled_by_sync"] = False
+        return True
 
     def note_and_review(self, opp, existing, old_stage, new_stage):
         """A confirmed order (or a quotation cancelled by hand) that left Award Won: one note on the order

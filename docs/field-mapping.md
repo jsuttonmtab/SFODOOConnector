@@ -352,6 +352,13 @@ Finance prefers handling this in Odoo rather than locking SF. Finance review
   written while the reversal lasts). **Only quotations the connector cancelled are
   reopened.** A quotation someone cancelled by hand for another reason is never
   reopened, because the flag is not set on it.
+- **Odoo must confirm it.** After `action_cancel` (called with `disable_cancel_warning`) the connector reads the
+  state back. Only `cancel` counts. If Odoo returns the cancel wizard instead, the flag is cleared, the order
+  error "could not cancel quotation" is written to `Odoo_Sync_Error__c`, and the order takes the confirmed-order
+  path (note + To Do). A failed cancel is not retried automatically, because `sf_stage` is recorded; Finance
+  handles it from the To Do. On reopen, the connector calls `action_draft` and reads the state back. It resyncs
+  only when the state is `draft`. Otherwise it reports "could not reopen quotation" and leaves the order and
+  the flag alone.
 - Order of writes, so a failed run recovers on the next run without duplicates: the
   cancel flag is written **before** `action_cancel`, so an interrupted cancel is still
   seen as the connector's; on reopen the state goes back to draft **before** the flag

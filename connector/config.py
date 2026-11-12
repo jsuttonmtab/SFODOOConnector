@@ -102,6 +102,8 @@ SF_VISIBLE_ISSUES = (
     "stage moved out of",            # opportunity left Award Won: order not changed (§4.6)
     "quotation cancelled in Odoo",   # opportunity left Award Won before confirmation: quotation cancelled (§4.6)
     "product not in Odoo",           # Salesforce product with no Odoo product and AUTO_CREATE_PRODUCTS off (§3)
+    "could not cancel quotation",    # Odoo did not cancel the quotation: order left for Finance (§4.6)
+    "could not reopen quotation",    # Odoo did not reopen the quotation: order left alone (§4.6)
     "products missing from Salesforce compared with Odoo; not removed.",          # removal brake, opportunity (§4.4)
     "products missing from Salesforce compared with Odoo; not removed in this run",  # removal brake, whole run (§4.4)
 )

@@ -37,17 +37,29 @@ def _match(row, domain):
     return True
 
 
+WIZARD = {"type": "ir.actions.act_window", "res_model": "sale.order.cancel", "target": "new"}
+
+
 class FakeOdoo:
-    def __init__(self, tables=None):
+    def __init__(self, tables=None, no_effect=()):
         self.tables = {model: [dict(r) for r in rows] for model, rows in (tables or {}).items()}
         self.log = []  # ("call", model, method, kwargs) / ("write", model, ids, vals) / ("create", model, vals)
         self._next_id = 1000
+        self.no_effect = set(no_effect)  # methods that run but leave the order's state as it was
 
     def search_read(self, model, domain, fields, **kwargs):
         return [dict(r) for r in self.tables.get(model, []) if _match(r, domain)]
 
     def call(self, model, method, **kwargs):
         self.log.append(("call", model, method, kwargs))
+        if method in self.no_effect:
+            # As Odoo can do: action_cancel on a sent quotation returns the cancel wizard and cancels nothing.
+            return WIZARD if method == "action_cancel" else None
+        new_state = {"action_cancel": "cancel", "action_draft": "draft"}.get(method)
+        if new_state:
+            for row in self.tables.get(model, []):
+                if row.get("id") in kwargs.get("ids", []):
+                    row["state"] = new_state
         return None
 
     def write(self, model, ids, vals):
@@ -292,6 +304,64 @@ class ProductMatchTests(unittest.TestCase):
         self.assertEqual(odoo.log, [])
         self.assertIn("order not synced: product not in Odoo: Study Z, code Z1, Salesforce 01tZ",
                       sync.issues[OPP_ID])
+
+
+class CancelVerificationTests(unittest.TestCase):
+    """Odoo must confirm the state: a wizard from action_cancel, or an action_draft that does not take effect,
+    is not counted as done."""
+
+    def setUp(self):
+        patcher = mock.patch.object(config, "FINANCE_ACTIVITY_USER", "finance@example.com")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_wizard_returned_instead_of_cancel_is_not_counted(self):
+        odoo = FakeOdoo({**BASE_TABLES, "sale.order": [order_row("sent")]}, no_effect={"action_cancel"})
+        sync = make_order_sync(odoo)
+        row = odoo.tables["sale.order"][0]
+        sync.stage_reversal(opp(STAGE_06), row)
+        self.assertEqual(row["state"], "sent")
+        self.assertFalse(row["sf_cancelled_by_sync"])  # flag cleared again
+        self.assertEqual(sync.counts["quotations_cancelled"], 0)
+        self.assertFalse(any(QUOTE_CANCELLED in body for body in odoo.bodies()))
+        self.assertEqual(len(odoo.calls("activity_schedule")), 1)  # fell back to note + To Do
+        self.assertTrue(any("could not cancel quotation" in m for m in sync.issues[OPP_ID]))
+        self.assertEqual(row["sf_stage"], STAGE_06)  # the reversal itself is still recorded
+
+    def test_cancel_is_called_with_disable_cancel_warning(self):
+        odoo = FakeOdoo({**BASE_TABLES, "sale.order": [order_row("sent")]})
+        make_order_sync(odoo).stage_reversal(opp(STAGE_06), odoo.tables["sale.order"][0])
+        cancels = odoo.calls("action_cancel")
+        self.assertEqual(len(cancels), 1)
+        self.assertEqual(cancels[0][3]["context"], {"disable_cancel_warning": True})
+
+    def test_unconfirmed_cancel_is_not_retried_automatically(self):
+        # The reversal is recorded (sf_stage = 06), so the next run sees no change and does not try again.
+        # Finance gets the To Do, and that is the handoff. A second To Do is not created either.
+        odoo = FakeOdoo({**BASE_TABLES, "sale.order": [order_row("sent")]}, no_effect={"action_cancel"})
+        row = odoo.tables["sale.order"][0]
+        make_order_sync(odoo).stage_reversal(opp(STAGE_06), row)
+        second = make_order_sync(odoo)
+        second.stage_reversal(opp(STAGE_06), row)
+        self.assertEqual(len(odoo.calls("action_cancel")), 1)
+        self.assertEqual(len(odoo.calls("activity_schedule")), 1)
+        self.assertEqual(second.counts["reversed_unchanged"], 1)
+
+    def test_action_draft_not_taking_effect_leaves_the_order_alone(self):
+        odoo = FakeOdoo({**BASE_TABLES, "sale.order": [order_row("cancel", sf_stage=STAGE_06, cancelled=True)]},
+                        no_effect={"action_draft"})
+        sync = make_order_sync(odoo)
+        headers = []
+        sync.sync_header = lambda o, existing: (headers.append(dict(existing)) or (True, existing["id"]))
+        sync.lines.sync = lambda *args, **kwargs: None
+        row = odoo.tables["sale.order"][0]
+        sync.create_or_update(opp(STAGE_07), row)
+        self.assertEqual(headers, [])  # header and lines not synced
+        self.assertEqual(row["state"], "cancel")
+        self.assertTrue(row["sf_cancelled_by_sync"])  # flag kept, so the next run tries again
+        self.assertEqual(odoo.writes("sale.order"), [])  # no flag clear, no stage update
+        self.assertFalse(any("was reopened" in body for body in odoo.bodies()))
+        self.assertTrue(any("could not reopen quotation" in m for m in sync.issues[OPP_ID]))
 
 
 if __name__ == "__main__":
