@@ -53,6 +53,9 @@ SF_WRITEBACK = os.environ.get("SF_WRITEBACK", "false").strip().lower() in ("1", 
 # Optional. If set, a real run is refused unless the connected org Id (18 characters) is this one.
 # Set it for production. A sandbox refresh changes the org Id, so for a sandbox leave it empty or update it.
 SF_EXPECTED_ORG_ID = os.environ.get("SF_EXPECTED_ORG_ID", "").strip()
+# Line name (description) changes from Salesforce. Default false: a changed description is written to Odoo and
+# listed in the line change note. True: the change is reported in the log and the dry run, and NOT written.
+SF_HOLD_NAME_UPDATES = os.environ.get("SF_HOLD_NAME_UPDATES", "false").strip().lower() in ("1", "true", "yes")
 # Default true: a real run (Odoo or Salesforce writes) is refused unless the connected Salesforce org
 # is a sandbox (Organization.IsSandbox). Set false only when the connector is pointed at production on purpose.
 SF_REQUIRE_SANDBOX = os.environ.get("SF_REQUIRE_SANDBOX", "true").strip().lower() in ("1", "true", "yes")

@@ -230,6 +230,12 @@ rest of the run was written.
 - `SF_REQUIRE_SANDBOX` (default `true`): before any Odoo or Salesforce write, the run reads
   `Organization` and refuses unless `IsSandbox` is true. Set it to `false` only when the connector is
   pointed at production on purpose.
+- `SF_HOLD_NAME_UPDATES` (default `false`): when `true`, a change to a line's description (name) from Salesforce is
+  logged (`name held (SF_HOLD_NAME_UPDATES) line ...`) and counted (`descriptions held`), but NOT written to Odoo. Set
+  to `true` while a Salesforce change to descriptions is being explained (2026-11-11: about 1,700 descriptions changed
+  during the write-back window). Quantity, price and other changes are still written.
+- Field names are matched without regard to case. The connector reads the org's own API names from describe once per
+  run (for example `Odoo_Id__c`), and uses them in SOQL and in the write-back body.
 - `SF_EXPECTED_ORG_ID` (optional): if set, a real run is refused unless the org Id matches. Set it for
   production. A sandbox refresh changes the sandbox's org Id, so for a sandbox either leave it empty
   or update it after the refresh.

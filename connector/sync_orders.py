@@ -577,6 +577,7 @@ class OrderSync(AccountSync):
             f"already open {c['activities_already_open']}, back-at-Award-Won notes {c['back_notes_posted']}), "
             f"lines created {c['lines_created']}, updated {c['lines_updated']}, "
             f"unchanged {c['lines_unchanged']}, removed {c['lines_removed']}, "
+            f"descriptions held {c['names_held']}, "
             f"removal brake: {c['opps_braked']} opportunities braked, "
             f"run brake {'ON, removals skipped for ' + str(c['opps_removals_skipped']) + ' opportunities' if self.global_brake else 'off'}, "
             f"line change notes {c['line_notes_posted']}, "

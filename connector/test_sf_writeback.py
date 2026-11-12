@@ -4,11 +4,13 @@ a fake client answers the composite PATCH the way Salesforce does.
 Run from the repo root:  python -m unittest connector.test_sf_writeback
 """
 import io
+import re
 import unittest
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 
 from connector.sf_client import SalesforceError
-from connector.sf_writeback import BATCH, INTEGRITY, WriteBack, _opportunity_ids
+from connector.sf_writeback import BATCH, INTEGRITY, WriteBack, _field_map, _opportunity_ids
 
 BAD_OPP = "006AAAAAAAAAAAAAAA"
 GOOD_OPP = "006BBBBBBBBBBBBBBB"
@@ -179,6 +181,131 @@ class ReportTests(unittest.TestCase):
         self.assertIn("0064W00001EOyE7  Acme renewal", text)
         self.assertIn("OpportunityLineItem 00kAAAAAAAAAAAAAAA  Study", text)
         self.assertNotIn("None", text)
+
+
+def _org_field(name, sf_type):
+    return {"name": name, "type": sf_type, "updateable": True}
+
+
+# The org's field names as describe returns them: Odoo_Id__c, not the Odoo_ID__c the connector was written with.
+ORG_FIELDS = {
+    "Account": [_org_field("Odoo_Id__c", "double"), _org_field("Odoo_Record__c", "url"),
+                _org_field("Odoo_Sync_Error__c", "textarea"), _org_field("Odoo_Last_Sync__c", "datetime")],
+    "Opportunity": [_org_field("Odoo_Id__c", "double"), _org_field("Odoo_Record__c", "url"),
+                    _org_field("Odoo_Sync_Error__c", "textarea"), _org_field("Odoo_Last_Sync__c", "datetime")],
+    "OpportunityLineItem": [_org_field("Odoo_Line_Id__c", "double"), _org_field("Odoo_Qty_Delivered__c", "double"),
+                            _org_field("Odoo_Qty_Invoiced__c", "double"), _org_field("Odoo_Fulfilled__c", "boolean")],
+}
+
+
+class FakeOrg(FakeSF):
+    """Describe and query answer as the org does: field names as the org stores them."""
+
+    def __init__(self, rows=None, drop=(), **kwargs):
+        super().__init__(**kwargs)
+        self.session = SimpleNamespace()
+        self.rows = dict(rows or {})
+        self.drop = set(drop)
+        self.describe_calls = []
+        self.soql = []
+
+    def describe(self, sobject):
+        self.describe_calls.append(sobject)
+        return {"fields": [f for f in ORG_FIELDS[sobject] if f["name"] not in self.drop]}
+
+    def query(self, soql):
+        self.soql.append(soql)
+        ids = re.findall(r"'([^']+)'", soql)
+        return [dict(self.rows[i]) for i in ids if i in self.rows]
+
+
+class FieldNameTests(unittest.TestCase):
+    """Field names are matched without regard to case, and the org's own names are used in SOQL and in the body."""
+
+    def line_rows(self):
+        return {
+            "00k1": {"Id": "00k1", "Odoo_Line_Id__c": 938.0, "Odoo_Qty_Delivered__c": 0.0,
+                     "Odoo_Qty_Invoiced__c": 0.0, "Odoo_Fulfilled__c": False},
+            "00k2": {"Id": "00k2", "Odoo_Line_Id__c": None, "Odoo_Qty_Delivered__c": None,
+                     "Odoo_Qty_Invoiced__c": None, "Odoo_Fulfilled__c": False},
+        }
+
+    def line_desired(self, line_id):
+        return {"Odoo_Line_ID__c": 938 if line_id == "00k1" else 939, "Odoo_Qty_Delivered__c": 0,
+                "Odoo_Qty_Invoiced__c": 0, "Odoo_Fulfilled__c": False}
+
+    def test_soql_uses_the_org_name_and_results_come_back_under_the_configured_name(self):
+        sf = FakeOrg(rows=self.line_rows())
+        wb = WriteBack(sf, None, dry_run=True)
+        current = wb._current("OpportunityLineItem", ["00k1"])
+        self.assertIn("Odoo_Line_Id__c", sf.soql[0])
+        self.assertNotIn("Odoo_Line_ID__c", sf.soql[0])
+        self.assertEqual(current["00k1"]["Odoo_Line_ID__c"], 938.0)
+
+    def test_record_with_an_id_already_in_the_org_is_not_planned(self):
+        sf = FakeOrg(rows=self.line_rows())
+        wb = WriteBack(sf, None, dry_run=True)
+        current = wb._current("OpportunityLineItem", ["00k1"])
+        wb._plan("OpportunityLineItem", "00k1", "", current["00k1"], self.line_desired("00k1"),
+                 group="006A")
+        self.assertEqual(wb.counts[("OpportunityLineItem", "unchanged")], 1)
+        self.assertEqual(wb.counts[("OpportunityLineItem", "planned")], 0)
+        self.assertEqual(wb.pending, {})
+
+    def test_only_the_real_gaps_are_planned(self):
+        sf = FakeOrg(rows=self.line_rows())
+        wb = WriteBack(sf, None, dry_run=True)
+        current = wb._current("OpportunityLineItem", ["00k1", "00k2"])
+        for line_id in ("00k1", "00k2"):
+            wb._plan("OpportunityLineItem", line_id, "", current[line_id], self.line_desired(line_id), group="006A")
+        self.assertEqual(wb.counts[("OpportunityLineItem", "unchanged")], 1)
+        self.assertEqual(wb.counts[("OpportunityLineItem", "planned")], 1)
+
+    def test_patch_body_uses_the_org_name(self):
+        sf = FakeOrg(rows=self.line_rows())
+        wb = WriteBack(sf, None, dry_run=False)
+        current = wb._current("OpportunityLineItem", ["00k2"])
+        wb._plan("OpportunityLineItem", "00k2", "", current["00k2"], self.line_desired("00k2"), group="006A")
+        payload = wb.pending["OpportunityLineItem"][0][1]
+        self.assertIn("Odoo_Line_Id__c", payload)
+        self.assertNotIn("Odoo_Line_ID__c", payload)
+        self.assertEqual(payload["Odoo_Line_Id__c"], 939)
+
+    def test_account_and_opportunity_ids_use_the_org_name(self):
+        sf = FakeOrg(rows={"006A": {"Id": "006A", "Odoo_Id__c": None, "Odoo_Record__c": None,
+                                    "Odoo_Sync_Error__c": None, "Odoo_Last_Sync__c": None}})
+        wb = WriteBack(sf, None, dry_run=False)
+        current = wb._current("Opportunity", ["006A"])
+        wb._plan("Opportunity", "006A", "Acme", current["006A"],
+                 {"Odoo_ID__c": 48, "Odoo_Record__c": "http://x/48"}, stamp=True)
+        payload = wb.pending["Opportunity"][0][1]
+        self.assertEqual(payload["Odoo_Id__c"], 48)
+        self.assertIn("Odoo_Last_Sync__c", payload)
+        self.assertNotIn("Odoo_ID__c", payload)
+
+    def test_missing_field_is_reported_not_guessed(self):
+        sf = FakeOrg(drop={"Odoo_Qty_Invoiced__c"})
+        wb = WriteBack(sf, None, dry_run=True)
+        self.assertFalse(wb._fields_ok("OpportunityLineItem"))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            wb._fields_ok("OpportunityLineItem")  # cached: no second message
+        self.assertEqual(out.getvalue(), "")
+
+    def test_describe_runs_once_per_run_across_write_backs(self):
+        sf = FakeOrg(rows=self.line_rows())
+        for _ in range(3):
+            WriteBack(sf, None, dry_run=True)._fields_ok("OpportunityLineItem")
+        self.assertEqual(sf.describe_calls.count("OpportunityLineItem"), 1)
+        self.assertEqual(_field_map(sf, "OpportunityLineItem")["odoo_line_id__c"]["name"], "Odoo_Line_Id__c")
+
+    def test_case_difference_is_announced_once_per_run(self):
+        sf = FakeOrg(rows=self.line_rows())
+        out = io.StringIO()
+        with redirect_stdout(out):
+            for _ in range(3):
+                WriteBack(sf, None, dry_run=True)._fields_ok("OpportunityLineItem")
+        self.assertEqual(out.getvalue().count("Odoo_Line_ID__c is Odoo_Line_Id__c in this org"), 1)
 
 
 if __name__ == "__main__":

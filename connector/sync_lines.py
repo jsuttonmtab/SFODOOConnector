@@ -60,6 +60,15 @@ def fetch_sf_lines(sf, opp_ids):
     return by_opp
 
 
+def hold_name_changes(changes):
+    """Split the line changes into (to write, held). With SF_HOLD_NAME_UPDATES true, a change to the line name is
+    held: it is returned in held, for the log, and is not written to Odoo. Other changes are unaffected."""
+    if not config.SF_HOLD_NAME_UPDATES:
+        return changes, []
+    held = [change for change in changes if change[0] == "name"]
+    return [change for change in changes if change[0] != "name"], held
+
+
 class LineSync:
     def __init__(self, parent):
         self.parent = parent
@@ -230,12 +239,16 @@ class LineSync:
         return f"{info['symbol']}{number}"
 
     def changed_text(self, rec, changes, sf_line, currency):
-        """One sentence for an updated line, or None if no Finance/CS-facing field changed."""
+        """One sentence for an updated line, or None if no Finance/CS-facing field changed. A description
+        change (the line name, from Salesforce) is listed as "description: old → new"."""
         by_field = {f: (c, w) for f, c, w in changes}
         clauses = []
         if "product_id" in by_field:
             old = rec["product_id"][1] if isinstance(rec["product_id"], (list, tuple)) else "-"
             clauses.append(f"product {old} → {self.sf_product_name(sf_line)}")
+        if "name" in by_field:
+            c, w = by_field["name"]
+            clauses.append(f"description: {show(c)} → {show(w)}")
         if "product_uom_qty" in by_field:
             c, w = by_field["product_uom_qty"]
             clauses.append(f"quantity {qty_text(c)} → {qty_text(w)}")
@@ -275,7 +288,8 @@ class LineSync:
         """Create, update and remove lines of one order. order_id is None only in a dry run for a
         new order, where the lines are counted but not created. Changes to an existing order are
         posted as ONE note per run; a new order gets no note. allow_removals False (the removal brake)
-        skips the removals of this order; creates and updates still apply."""
+        skips the removals of this order; creates and updates still apply. A held line name (see
+        hold_name_changes) is logged and not written, and is not in the note."""
         existing = {rec["sf_line_id"]: rec for rec in self.by_order.get(order_id, [])} if order_id else {}
         sf_ids = {line["Id"] for line in sf_lines}
         currency = opp.get("CurrencyIsoCode")
@@ -302,7 +316,11 @@ class LineSync:
             for field, message in problems.items():
                 self.line_error(opp, sf_line, f"{message} (not applied)")
             self.apply_locks(rec, vals, opp, sf_line)
-            changes = diff(rec, vals, LINE_M2O)
+            changes, held = hold_name_changes(diff(rec, vals, LINE_M2O))
+            for _, current, wanted in held:
+                self.counts["names_held"] += 1
+                print(f"name held (SF_HOLD_NAME_UPDATES) line {sf_id} on {opp['Id']} {opp['Name']}: "
+                      f"{show(current)} -> {show(wanted)}")
             if not changes:
                 self.counts["lines_unchanged"] += 1
                 continue
@@ -332,3 +350,4 @@ class LineSync:
             parts.append("Added: " + "; ".join(added_parts) + ".")
         if parts and not new_order:
             self.post_note(opp, order_id, parts)
+
