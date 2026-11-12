@@ -8,6 +8,7 @@ Odoo sync. Rules: docs/field-mapping.md §5.1.
 Writes happen only when SF_WRITEBACK=true, and only after the org check in sf_client.check_org passes.
 --dry-run prints the field changes per record and writes nothing; it does not need SF_WRITEBACK.
 """
+import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
@@ -123,14 +124,29 @@ def _line_values(rec):
     }
 
 
+# Opportunity Ids named in a FIELD_INTEGRITY_EXCEPTION message: 15 or 18 characters, key prefix 006.
+OPP_ID = re.compile(r"\b006[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?\b")
+INTEGRITY = "FIELD_INTEGRITY_EXCEPTION"
+MESSAGE_SHOWN = 300  # characters of an error message shown in the run summary
+
+
+def _opportunity_ids(messages):
+    """Opportunity Ids named in the error messages, each once, in order of appearance."""
+    found = []
+    for message in messages:
+        found += OPP_ID.findall(message)
+    return list(dict.fromkeys(found))
+
+
 class WriteBack:
     def __init__(self, sf, odoo, dry_run):
         self.sf = sf
         self.odoo = odoo
         self.dry_run = dry_run
         self.counts = Counter()              # (sobject, status) -> n
-        self.failures = defaultdict(list)    # "<object>: <error>" -> [Salesforce Id]
-        self.pending = defaultdict(list)     # sobject -> records waiting to be sent
+        self.failed = []                     # one entry per record Salesforce did not write
+        self.labels = {}                     # (sobject, Id) -> name, for the summary
+        self.pending = defaultdict(list)     # sobject -> [(group key, payload)] waiting to be sent
         self.fields_ok = {}                  # sobject -> bool, checked once per run
         self.now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -188,10 +204,12 @@ class WriteBack:
 
     # ----- planning and sending -----
 
-    def _plan(self, sobject, sf_id, label, current, desired, stamp=False, count_unchanged=True):
+    def _plan(self, sobject, sf_id, label, current, desired, stamp=False, count_unchanged=True, group=None):
         """Queue the record if any wanted value differs. stamp: also set Odoo_Last_Sync__c, which is
         done only when something else on the record changes. count_unchanged False: a record with no
-        Odoo record yet is counted under "no Odoo record", not as unchanged."""
+        Odoo record yet is counted under "no Odoo record", not as unchanged. group: records with the same
+        group are sent in the same Salesforce call (the lines of one opportunity)."""
+        self.labels[(sobject, sf_id)] = label
         changes = _changes(current, desired)
         if not changes:
             if count_unchanged:
@@ -204,28 +222,72 @@ class WriteBack:
         name = f" {label}" if label else ""
         print(f"{prefix} {sobject} {sf_id}{name}: {detail}")
         self.counts[(sobject, "planned")] += 1
-        self.pending[sobject].append({"attributes": {"type": sobject}, "Id": sf_id, **changes})
+        payload = {"attributes": {"type": sobject}, "Id": sf_id, **changes}
+        self.pending[sobject].append((sf_id if group is None else group, payload))
 
     def _flush(self, sobject):
-        records = self.pending.pop(sobject, [])
+        """Send the planned records of one object, BATCH records per call. Records of one group are never
+        split between calls; a group larger than BATCH is sent on its own."""
+        entries = self.pending.pop(sobject, [])
         if self.dry_run:
             return
-        for chunk in _chunks(records, BATCH):
-            try:
-                results = self.sf.request(
-                    "PATCH", f"/services/data/v{self.sf.api_version}/composite/sobjects",
-                    {"allOrNone": False, "records": chunk},
-                )
-            except SalesforceError as err:
-                results = [{"id": r["Id"], "success": False,
-                            "errors": [{"statusCode": "REQUEST", "message": str(err)}]} for r in chunk]
-            for result in results:
-                if result.get("success"):
-                    continue
-                errors = result.get("errors") or [{"statusCode": "UNKNOWN", "message": "no detail returned"}]
-                kind = f"{sobject}: " + "; ".join(f"{e.get('statusCode')} {e.get('message')}" for e in errors)
-                self.failures[kind].append(result.get("id"))
-                self.counts[(sobject, "failed")] += 1
+        units = {}  # group key -> payloads, in order of first appearance
+        for key, payload in entries:
+            units.setdefault(key, []).append(payload)
+        batch, size = [], 0
+        for unit in units.values():
+            if batch and size + len(unit) > BATCH:
+                self._send(sobject, batch)
+                batch, size = [], 0
+            batch.append(unit)
+            size += len(unit)
+        if batch:
+            self._send(sobject, batch)
+
+    def _send(self, sobject, units):
+        """Write the records of these units (lists of payloads) in one Salesforce call, with allOrNone
+        false. When the call fails as a whole, or every record in it fails, the units are split in halves
+        and each half is sent again, recursively, until a failing record is alone (a unit is never split).
+        Records that succeed are kept. A record that fails on its own is reported in self.failed."""
+        records = [payload for unit in units for payload in unit]
+        try:
+            results = self.sf.request(
+                "PATCH", f"/services/data/v{self.sf.api_version}/composite/sobjects",
+                {"allOrNone": False, "records": records},
+            )
+            if not isinstance(results, list) or len(results) != len(records):
+                raise SalesforceError("Salesforce returned an unexpected response to a write")
+            # Results come back in the order sent. A failed result has no Id, so results are matched by position.
+            errors = [None if r.get("success") else
+                      (r.get("errors") or [{"statusCode": "UNKNOWN", "message": "no detail returned"}])
+                      for r in results]
+            whole = None
+        except SalesforceError as err:
+            errors = None
+            whole = [{"statusCode": "REQUEST", "message": str(err)}]
+        failed_all = errors is None or all(e is not None for e in errors)
+        if failed_all and len(units) > 1:
+            half = len(units) // 2
+            self._send(sobject, units[:half])
+            self._send(sobject, units[half:])
+            return
+        if errors is None:
+            errors = [whole] * len(records)
+        for payload, error in zip(records, errors):
+            self._outcome(sobject, payload["Id"], error)
+
+    def _outcome(self, sobject, sf_id, error):
+        """Count one record that Salesforce did not write. error None: the record was written."""
+        if error is None:
+            return
+        self.counts[(sobject, "failed")] += 1
+        self.failed.append({
+            "sobject": sobject,
+            "id": sf_id,
+            "name": self.labels.get((sobject, sf_id), ""),
+            "code": " + ".join(sorted({e.get("statusCode") or "UNKNOWN" for e in error})),
+            "messages": [e.get("message") or "" for e in error],
+        })
 
     # ----- objects -----
 
@@ -296,7 +358,8 @@ class WriteBack:
         self._lines(sf_lines)
 
     def _lines(self, sf_lines):
-        """OpportunityLineItem: Odoo_Line_ID__c, Odoo_Qty_Delivered__c, Odoo_Qty_Invoiced__c, Odoo_Fulfilled__c."""
+        """OpportunityLineItem: Odoo_Line_ID__c, Odoo_Qty_Delivered__c, Odoo_Qty_Invoiced__c, Odoo_Fulfilled__c.
+        The lines of one opportunity are one group: they are sent in the same call."""
         lines = [line for group in sf_lines.values() for line in group]
         if not lines or not self._fields_ok("OpportunityLineItem"):
             return
@@ -309,7 +372,9 @@ class WriteBack:
             if rec is None:
                 self.counts[("OpportunityLineItem", "no Odoo record")] += 1
                 continue
-            self._plan("OpportunityLineItem", line["Id"], "", current.get(line["Id"], {}), _line_values(rec))
+            product = line.get("Product2") or {}
+            self._plan("OpportunityLineItem", line["Id"], product.get("Name") or "",
+                       current.get(line["Id"], {}), _line_values(rec), group=line["OpportunityId"])
         self._flush("OpportunityLineItem")
 
     # ----- output -----
@@ -332,29 +397,53 @@ class WriteBack:
                 print(f"Odoo_Sync_Error__c non-blank, {label}: {c[(sobject, 'error before')]} with every message, "
                       f"{c[(sobject, 'error after')]} with Sales-visible messages only "
                       f"(of {c[(sobject, 'error checked')]} checked)")
-        if self.failures:
-            total = sum(len(ids) for ids in self.failures.values())
-            print(f"Salesforce failures ({total}), grouped by type:")
-            for kind, ids in sorted(self.failures.items(), key=lambda kv: -len(kv[1])):
-                print(f"  {len(ids):>5}  {kind}")
-                print(f"           e.g. {ids[0]}")
+        if self.failed:
+            self._report_failed()
+
+    def _report_failed(self):
+        """Records Salesforce did not write, grouped by error code, each with its Id and name. The
+        FIELD_INTEGRITY_EXCEPTION group is explained once, with the opportunities named in its messages."""
+        print(f"Salesforce records NOT written ({len(self.failed)}), grouped by error code:")
+        groups = defaultdict(list)
+        for row in self.failed:
+            groups[row["code"]].append(row)
+        for code, rows in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+            print(f"  {code}: {len(rows)} record(s)")
+            if code == INTEGRITY:
+                opp_ids = _opportunity_ids(m for row in rows for m in row["messages"])
+                print("    opportunity totals don't match its products in Salesforce (data problem in this org)")
+                print(f"    opportunities ({len(opp_ids)}):")
+                for opp_id in opp_ids:
+                    name = self.labels.get(("Opportunity", opp_id)) or "name not in this run"
+                    print(f"      {opp_id}  {name}")
+                first = next((m for row in rows for m in row["messages"] if m), "")
+                print(f"    message: {first[:MESSAGE_SHOWN]}")
+            for row in rows:
+                line = f"    {row['sobject']} {row['id']}  {row['name']}"
+                if code != INTEGRITY:
+                    line += "  " + "; ".join(m for m in row["messages"] if m)[:MESSAGE_SHOWN]
+                print(line.rstrip())
 
 
 def write_accounts(sf, odoo, dry_run, records, issues):
-    """Account write-back for the records a sync run handled. Does not raise: the Odoo side is already done."""
+    """Account write-back for the records a sync run handled. Does not raise: the Odoo side is already done.
+    Returns the number of records Salesforce did not write."""
     wb = WriteBack(sf, odoo, dry_run)
     try:
         wb.accounts(records, issues)
     except (SalesforceError, OdooError) as err:
         print(f"Salesforce write-back stopped: {err}")
     wb.summary()
+    return len(wb.failed)
 
 
 def write_opportunities(sf, odoo, dry_run, opps, issues, sf_lines):
-    """Opportunity and line write-back for a sync run. Does not raise: the Odoo side is already done."""
+    """Opportunity and line write-back for a sync run. Does not raise: the Odoo side is already done.
+    Returns the number of records Salesforce did not write."""
     wb = WriteBack(sf, odoo, dry_run)
     try:
         wb.opportunities(opps, issues, sf_lines)
     except (SalesforceError, OdooError) as err:
         print(f"Salesforce write-back stopped: {err}")
     wb.summary()
+    return len(wb.failed)

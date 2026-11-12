@@ -209,10 +209,20 @@ quantities back to Salesforce. Rules: `docs/field-mapping.md` §5.1. It is off u
 **Reading the log**
 
 - `Salesforce write-back (...)`: counts per object: updated, unchanged, failed, no Odoo record.
-- `Salesforce failures (n), grouped by type`: one line per error kind, with an example Id.
+- `Salesforce records NOT written (n), grouped by error code`: one line per record Salesforce did not write,
+  with its Id and name. A `FIELD_INTEGRITY_EXCEPTION` group is explained once, with the opportunities named
+  in the error. Those opportunities have totals that do not match their products in Salesforce: a data
+  problem in this org, to fix there. The run exits with code 4 (see Exit codes below).
 - `Salesforce write-back ... stopped`: a check failed (org mismatch, missing setting, field problem).
   The Odoo side of the run still completed.
-- Records are sent with `allOrNone` off, so one bad record does not stop the others.
+- Records are sent with `allOrNone` off, so one bad record does not stop the others. When a call fails
+  as a whole, or every record in it fails, the call is split in halves and sent again until the failing
+  records are alone. Good records in the same call are written. Lines of one opportunity are never split
+  across calls, so if an opportunity's lines fail, all of them are reported.
+
+**Exit codes.** 0 = clean. 2 = the removal brake (`EXIT 2`, see below). 4 = Salesforce records were not
+written (`EXIT 4`). Both at once: 6. Exit 4 is a data problem to fix in Salesforce, not a crash: the
+rest of the run was written.
 
 **Safety settings**
 

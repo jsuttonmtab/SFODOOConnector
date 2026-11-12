@@ -623,7 +623,10 @@ def main(argv=None):
         print(f"ERROR {err}")
         return 1
     # After the Odoo side, so a Salesforce problem cannot stop the Odoo sync.
-    write_accounts(sf, odoo, args.dry_run, accounts + parents, sync.issues)
+    unwritten = write_accounts(sf, odoo, args.dry_run, accounts + parents, sync.issues)
+    if unwritten:
+        print(f"EXIT 4: {unwritten} Salesforce record(s) not written. See 'Salesforce records NOT written' above.")
+        return 4
     return 0
 
 

@@ -605,6 +605,7 @@ def main(argv=None):
         print("ERROR --allow-mass-removal needs --opportunity (one opportunity a person has checked)")
         return 1
 
+    unwritten = 0  # Salesforce records the write-back did not write (exit code 4)
     try:
         odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY)
         sf = SalesforceClient(get_session())
@@ -647,7 +648,7 @@ def main(argv=None):
                   f"accounts and {len(parents)} parents first")
             account_sync = AccountSync(odoo, args.dry_run)
             account_sync.run(accounts, parents)
-            write_accounts(sf, odoo, args.dry_run, accounts + parents, account_sync.issues)
+            unwritten += write_accounts(sf, odoo, args.dry_run, accounts + parents, account_sync.issues)
             sync.load_partners()
 
         print(f"{len(qualifying)} opportunities at stage {STAGE_AWARD_WON!r} or Closed, "
@@ -662,11 +663,16 @@ def main(argv=None):
         print(f"ERROR {err}")
         return 1
     # After the Odoo side, so a Salesforce problem cannot stop the Odoo sync.
-    write_opportunities(sf, odoo, args.dry_run, opps, sync.issues, sync.sf_lines)
+    unwritten += write_opportunities(sf, odoo, args.dry_run, opps, sync.issues, sync.sf_lines)
+    # Exit codes are bits: 2 = run brake (removals skipped), 4 = Salesforce records not written. Both: 6.
+    code = 0
     if sync.global_brake:
         print("EXIT 2: the run brake stopped removals in this run. Review the removal brake lines above.")
-        return 2
-    return 0
+        code |= 2
+    if unwritten:
+        print(f"EXIT 4: {unwritten} Salesforce record(s) not written. See 'Salesforce records NOT written' above.")
+        code |= 4
+    return code
 
 
 if __name__ == "__main__":
