@@ -54,6 +54,12 @@ class SaleOrder(models.Model):
         string='Salesforce Stage',
         help='Current Salesforce StageName, for visibility and the stage-reversal rule.',
     )
+    sf_cancelled_by_sync = fields.Boolean(
+        string='Cancelled by Salesforce Sync',
+        copy=False,
+        help='The connector cancelled this quotation because its opportunity left stage 07 before it was '
+             'confirmed. Only these are reopened when the opportunity returns. Set by the connector only.',
+    )
 
     _sf_opportunity_id_unique = models.Constraint(
         'UNIQUE(sf_opportunity_id)',

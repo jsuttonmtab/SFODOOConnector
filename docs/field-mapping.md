@@ -73,7 +73,7 @@ the admin should create matching `Odoo_Id__c`, `Odoo_Record__c` (URL) and
 | `Revenue_allocation_company_ID__c` | `sf_revenue_allocation_company_id` | NEW — **fix type** | In SF this is a lookup to **Account**, not to an mTab entity. The Odoo field must be many2one `res.partner` (resolved via `sf_account_id`), not `res.company`. |
 | `CurrencyIsoCode` | via `pricelist_id` | LOOKUP | GBP, CNY, EUR, JPY, USD. SO `currency_id` is read-only and comes from the pricelist. Locked after create. |
 | `Pricebook2Id` | — | NOT SYNCED | Price books stay in SF only (Finance, 2026-10-14). The connector picks the Odoo pricelist from `CurrencyIsoCode` instead. |
-| `Payment_Terms__c` | `payment_term_id` | LOOKUP | 12 values: Net 30, Net 30 EOM, Net 45, Net 45 PSA, Net 55, Net 60, Net 60 EOM, Net 65, Net 75, Net 90, Net 120, Net 180. Synced by name. "Net X" = due X days after invoice date; "Net X EOM" = due X days after the end of the invoice month. The `sf_connector` module ships all 12 as data. "Net 45 PSA": meaning to confirm, treated as Net 45 for now. Placeholder `This will prepopulate on save` → reject. |
+| `Payment_Terms__c` | `payment_term_id` | LOOKUP | 12 values: Net 30, Net 30 EOM, Net 45, Net 45 PSA, Net 55, Net 60, Net 60 EOM, Net 65, Net 75, Net 90, Net 120, Net 180. Synced by name. "Net X" = due X days after invoice date; "Net X EOM" = due X days after the end of the invoice month. The `sf_connector` module ships all 12 as data. "Net 45 PSA" = due 45 days after the **end of the invoice month** (Finance, 2026-10-28): the same due date whether issued on the 1st or the 31st. Defined like Net 30 EOM and Net 60 EOM. Placeholder `This will prepopulate on save` → reject. |
 | `OwnerId` → `Owner.Email` | `user_id` | LOOKUP | `res.users` by email. |
 | `Date_Award_Won_Date__c` | `sf_award_won_date` | NEW | **Changed from `Date_Award_Won0__c`**, which is a text formula over a text field. `Date_Award_Won_Date__c` is a real date field. Locked after create. `date_order` gets set to this too. |
 | `Term_Start_Date__c` | `sf_term_start_date` | NEW | |
@@ -120,7 +120,7 @@ from `x_country` and is harmless.
 |---|---|---|---|
 | `Id` | `sf_line_id` | NEW | Upsert key per line. Also copied to `lb.item.deliverable.sf_opportunity_line_id` (already exists there). |
 | `celigo_sfnsio__NetSuite_Line_Id__c` | — | NOT SYNCED | Legacy Celigo key, replaced by `sf_line_id`. Revisit only if NetSuite orders are migrated. |
-| `Product2Id` (→ `Product2.ProductCode`) | `product_id` | LOOKUP | Match on product code → `default_code`, which is more reliable than `rapidproducts__ProductName__c` (free text). Fall back to name. Unmatched → error, line not created. Requires Odoo products to carry the SF product codes. |
+| `Product2Id` (→ `Product2.ProductCode`, `Product2.Name`) | `product_id` | LOOKUP (2026-10-28) | See the product rule below the table. Matched by Salesforce Id first (`product.template.sf_product_id`). Only when no product has that Id: by product code (`default_code`), then by name, and the match is stamped with the Id. Not found and `AUTO_CREATE_PRODUCTS` off: the line cannot be synced and **the whole order fails** with a Sales-visible message naming the product. |
 | `Combined_Product_Description__c` | `name` | OK | Line description. Locked once delivered/invoiced. |
 | `Quantity` | `product_uom_qty` | OK | Cannot go below `qty_delivered`. |
 | `Total_Billable_Amount__c` | `price_unit` | OK | Ignored (price 0) on information-only lines. **Per unit**, not a line total: SF's own formula `Total_Billable_Amount_Quantity__c = Total_Billable_Amount__c * Quantity` proves it. Map straight to `price_unit`. Locked once `qty_invoiced > 0`. |
@@ -140,6 +140,14 @@ from `x_country` and is harmless.
 | `Term_Start_Date__c` / `Term_End_Date__c` | `sf_term_start_date` / `sf_term_end_date` | NEW | |
 | `Billing_Schedule__c` | `sf_billing_schedule` | NEW (store only) | Picklist (14 values: 100% Upfront, Monthly - 1 Year, Quarterly in advance, Quarterly in arrears (4 fiscal variants), As delivered, PSA, Custom…). Default `Prepopulated on Save` is a placeholder → treat as not set. Stored as-is. Finance wants Odoo eventually to prompt them when an invoice is due (by delivery or by date), but that is out of scope for integration testing. Locked once invoiced. |
 | `Information_Only__c` | `sf_information_only` | NEW (decided) | Info-only lines are the deliverables that make up a "Data & Analytic Services Subscription"; the subscription line is what's billed. Sync them as real lines with **`price_unit = 0`** so they feed the DS deliverable report. They are invoiced as normal (at zero) so orders don't sit at "to invoice", but must be **hidden on the invoice PDF**. NetSuite did this with a custom template; in Odoo it's an invoice report change, deferred to the implementation phase. |
+
+**Product rule (Finance review, 2026-10-28).** A product is matched in this order:
+
+1. `sf_product_id` = `Product2Id`. The Salesforce Id is stored on the product template (`product.template.sf_product_id`, unique where set, shown on the product form in a Salesforce group).
+2. Only when no product has that Id: `default_code` = `Product2.ProductCode`, then name = `Product2.Name` (case-insensitive). A product found this way is **stamped** with the Id, so the next run matches it by Id. The first run backfills the existing auto-created products this way. A product already stamped with a different Id is not used.
+3. Otherwise: with `AUTO_CREATE_PRODUCTS=true` a service product is created with the Id (no tasks, no taxes, as before). With `false`, the order is not synced and its `Odoo_Sync_Error__c` says `product not in Odoo: <name>, code <code>, Salesforce <Id>`. Nothing is written for that order.
+
+Finance maintains product types (professional services or subscriptions) and the Generates Deliverables flag; the connector does not change them.
 
 ---
 
@@ -314,23 +322,40 @@ reads both; nothing new is needed in Odoo.
 Not handled by the current Celigo integration. In the sandbox, 8 synced
 opportunities were later moved to Award Lost. CS reviewed them (2026-10-14):
 genuine cancellations (deal dropped, funded from a main PO, Russia cut-off,
-order merged into another opportunity) and a few stage misclicks. None needs
-action now.
+order merged into another opportunity) and a few stage misclicks.
 
-Finance prefers handling this in Odoo rather than locking SF. **Rule:**
+Finance prefers handling this in Odoo rather than locking SF. Finance review
+(2026-10-28) split the rule by whether the order is confirmed. **Rule:**
 
 - If a synced opportunity moves from stage 07 / `Closed` to any other stage, the
-  connector does **not** change or cancel the Odoo order.
-- A reversal is acted on only when `sf_stage` in Odoo differs from the stage in
-  Salesforce. A reversed order whose stage has not changed since the last run is
-  counted silently and produces no warning, note or To Do.
-- It posts an internal note on the order and creates a **To Do** for the Finance
-  user (`FINANCE_ACTIVITY_USER`) to review (cancel, keep, or wait for SF to be
-  corrected). The To Do is created with Odoo's standard `activity_schedule`, so
-  the connector needs no access to `ir.model`.
-- It updates `sf_stage` last. Each step checks Odoo first, so a run that fails
-  part-way finishes on the next run: the note is posted once and a To Do is created
-  only if no open connector To Do is on the order.
+  connector looks at its Odoo order. Nothing is done unless `sf_stage` in Odoo
+  differs from the stage in Salesforce. A reversed order whose stage has not
+  changed since the last run is counted silently and produces no warning, note,
+  To Do or cancel.
+- **Unconfirmed quotation** (state `draft` or `sent`): the connector **cancels the
+  quotation** (`action_cancel`), sets `sf_cancelled_by_sync` on it (read-only on the
+  Salesforce tab), posts a chatter note saying why, and creates **no To Do**. The
+  opportunity's `Odoo_Sync_Error__c` gets a Sales-visible message: "quotation
+  cancelled in Odoo because the opportunity left Award Won ... it is reopened if the
+  opportunity returns".
+- **Confirmed order** (state `sale` or `done`), or a quotation cancelled by hand:
+  the order is not changed. The connector posts an internal note and creates a
+  **To Do** for the Finance user (`FINANCE_ACTIVITY_USER`) to review (cancel, keep,
+  or wait for SF to be corrected). The To Do is created with Odoo's standard
+  `activity_schedule`, so the connector needs no access to `ir.model`. The
+  opportunity's `Odoo_Sync_Error__c` says "stage moved out of Award Won, order not
+  changed, review in Odoo".
+- **Reopen:** if the opportunity returns to stage 07 / `Closed` and its quotation has
+  `sf_cancelled_by_sync`, the same quotation is set back to draft (its number and
+  history are kept), a note is posted, the header and lines are resynced, and the
+  cancellation message is cleared from `Odoo_Sync_Error__c` (the message is only
+  written while the reversal lasts). **Only quotations the connector cancelled are
+  reopened.** A quotation someone cancelled by hand for another reason is never
+  reopened, because the flag is not set on it.
+- Order of writes, so a failed run recovers on the next run without duplicates: the
+  cancel flag is written **before** `action_cancel`, so an interrupted cancel is still
+  seen as the connector's; on reopen the state goes back to draft **before** the flag
+  is cleared. Each note is checked in Odoo first, and `sf_stage` is updated last.
 - **One note per reversal.** When an order returns to Award Won, the connector
   posts a marker note ("Salesforce stage back to …"). A reversal note counts as
   already posted only if it comes after the latest marker. So a deal that goes
@@ -345,9 +370,9 @@ Finance prefers handling this in Odoo rather than locking SF. **Rule:**
   connector warns once per run and skips the To Do; the note is still posted.
 - If `FINANCE_ACTIVITY_USER` is the API user (`ODOO_API_LOGIN`, when set), the
   To Do is created but Odoo sends no assignment email. The connector warns.
-- It is written to `Odoo_Sync_Error__c` in SF (§5.1) for as long as the reversal lasts.
-- If the opportunity returns to stage 07 / `Closed`, the To Do can be closed by
-  Finance; syncing continues normally. The connector does not close it.
+- If the opportunity returns to stage 07 / `Closed` and the To Do of a confirmed
+  order is still open, Finance can close it; syncing continues normally. The
+  connector does not close it.
 
 Optional, SF admin: a confirmation prompt when changing the stage of an
 opportunity that has an Odoo ID, to catch misclicks.
@@ -451,15 +476,17 @@ replicated for now.
 
 ## 6. New fields summary (`sf_connector` Odoo module)
 
-Installed in **v19.0.1.5.0** (`odoo_addons/sf_connector`):
+Installed in **v19.0.1.6.0** (`odoo_addons/sf_connector`; v19.0.1.5.0 before the Finance review):
 
 - `res.partner`: `sf_account_id`, `sf_legal_entity_name`, `sf_billing_distribution_method`, `sf_default_billing_entity_id`, `sf_parent_account_id` (readonly; SF ParentId, not `parent_id`, see §1), `sf_vat_rejected` (readonly; SF VAT that Odoo rejected, see §1 VAT handling)
-- `sale.order`: `sf_opportunity_id`, `sf_revenue_allocation_company_id`, `sf_award_won_date`, `sf_term_start_date`, `sf_opportunity_type`, `sf_description`, `sf_invoice_notes`, `sf_invoice_additional_info`, `sf_billing_distribution_method`, `sf_vat_number`, `sf_stage`
+- `sale.order`: `sf_opportunity_id`, `sf_revenue_allocation_company_id`, `sf_award_won_date`, `sf_term_start_date`, `sf_opportunity_type`, `sf_description`, `sf_invoice_notes`, `sf_invoice_additional_info`, `sf_billing_distribution_method`, `sf_vat_number`, `sf_stage`, `sf_cancelled_by_sync` (readonly; set by the connector when it cancels an unconfirmed quotation, §4.6)
+- `product.template`: `sf_product_id` (readonly; Salesforce Product2 Id, unique where set, §3)
 - `sale.order.line`: `sf_line_id`, `sf_data_vendor`, `sf_coverage_period`, `sf_study_type`, `sf_study_name`, `sf_wave_period`, `sf_delivery`, `sf_information_only`, `sf_is_upsell`, `sf_on_hold`, `sf_removed_in_sf`, `sf_term_start_date`, `sf_term_end_date`, `sf_billing_schedule`
 
 Also installed:
 
-- Data: the 12 Salesforce payment terms (`data/payment_terms.xml`, `noupdate`).
+- Data: the 12 Salesforce payment terms (`data/payment_terms.xml`, `noupdate`). `Net 45 PSA` is due 45 days after the end of the invoice month. An existing term is updated in place by `migrations/19.0.1.6.0/post-migrate.py`.
+- Order label: `origin` (Source Document) is shown as **Sales Order Name** in the form, the order and quotation lists and the search. The field itself is not renamed.
 - Dependency: `lb_item_deliverables`. `sale.order.line` writes of `sf_on_hold` set `dispatch_status` on its deliverables, and new deliverables on a held line start on hold (`models/lb_item_deliverable.py`).
 - Views: a "Salesforce" tab on the customer and sales order forms, and the `sf_*` line fields as optional order-line columns. All `sf_*` fields are readonly.
 
@@ -477,9 +504,9 @@ production.
 |---|---|---|---|
 | 1 | Admin: the integration user needs Edit on `Odoo_ID__c`, `Odoo_Record__c`, `Odoo_Sync_Error__c` and `Odoo_Last_Sync__c` (Account, Opportunity) and on `Odoo_Line_ID__c`, `Odoo_Qty_Delivered__c`, `Odoo_Qty_Invoiced__c`, `Odoo_Fulfilled__c` (OpportunityLineItem), and must be able to see the records. **Checked 2026-10-29:** the user can see no Account, Opportunity or line records, Account and Opportunity are not updateable, and the Odoo fields are read-only. Write-back stays stopped for each object until fixed (§5.1). | SF admin | Yes, for write-back |
 | 2 | Which attachment mechanism (Attachment vs Files) and file naming the SF invoice workflows rely on. **Answered 2026-10-14:** classic Attachment records named `<invoice number>.pdf`, created by the integration user (§5). Open: whether SF workflows depend on the invoice-number format. | Jason (query below) / CS | Yes, for invoice sync (naming question for CS) |
-| 3 | Do Odoo products carry the SF `ProductCode` in `default_code`? | Jason | Yes |
+| 3 | Do Odoo products carry the SF `ProductCode` in `default_code`? Superseded 2026-10-28: products are matched by `sf_product_id` (Salesforce Id) first, and the code and name are the fallback, stamped with the Id (§3). | Jason | Yes |
 | 4 | Michael Martin's Celigo country alias list | Jason / Michael | Helpful |
-| 5 | What "Net 45 PSA" means | Finance | No |
+| 5 | What "Net 45 PSA" means. **Answered 2026-10-28:** 45 days after the end of the invoice month. | Finance | No |
 | 6 | Hide information-only lines on the invoice PDF | Implementation | No |
 | 7 | Billing-schedule invoice prompts | Implementation | No |
 | 8 | Go-live: confirm loading open (stage 07) orders only | Finance | No |
@@ -528,3 +555,7 @@ sf data query --query "SELECT ContentDocument.Title, ContentDocument.FileExtensi
 | 2026-10-27 | Connector-managed sale orders are set to the `DS deliverables` project so CS can see their deliverables in the Delivery Tracker. Set on create and backfilled once where empty; never overwritten. Service products created by the connector have `service_tracking = 'no'`, so the project does not create tasks | Jason |
 | 2026-10-27 | Stage reversals: one note per actual reversal (a return to Award Won is marked in the chatter); reversed orders with no stage change are silent; line changes are posted as one note per run listing Finance/CS-facing changes | Jason |
 | 2026-10-14 | Deliverable holds are managed only from SF; clearing On Hold releases all of the line's undelivered deliverables | Jason |
+| 2026-10-28 | Net 45 PSA: due 45 days after the end of the invoice month (Finance review). Existing term updated in place by the 19.0.1.6.0 migration | Finance |
+| 2026-10-28 | Stage reversal of an unconfirmed quotation (draft or sent): cancel it, note why, no To Do. Confirmed orders keep the note and To Do. Reopen only quotations the connector cancelled (`sf_cancelled_by_sync`) when the opportunity returns | Finance |
+| 2026-10-28 | Source Document shown as "Sales Order Name" in the order views (label only, field not renamed) | Finance |
+| 2026-10-28 | Products matched by Salesforce Id first; code and name are the fallback and stamp the Id. A line whose product is not found (AUTO_CREATE_PRODUCTS off) fails its whole order with a Sales-visible message | Finance |

@@ -162,6 +162,28 @@ git pull --ff-only
   Odoo: Apps → sf_connector → Upgrade. Code pulled without the upgrade can fail when it writes
   to fields the database doesn't have yet.
 
+## Upgrade to sf_connector 19.0.1.6.0 (Finance review)
+
+Order matters. Upgrade the Odoo module first, then pull the code, before the next cron tick. The new
+connector code writes `sf_cancelled_by_sync` and `sf_product_id`, which exist only after the upgrade.
+(The reverse order, new module with old code, is harmless: the new fields are optional.)
+
+1. In Odoo (mpl-odoo sandbox first, then production): Apps → sf_connector → **Upgrade**. Watch the log
+   for errors on the views `sale_order_list_search_views.xml` and `product_template_views.xml` (see below).
+   Or from the shell, as the Odoo service user: `odoo -d <database> -u sf_connector --stop-after-init`.
+2. The upgrade runs `migrations/19.0.1.6.0/post-migrate.py`: the existing **Net 45 PSA** term gets the new
+   definition (45 days after end of month) in place. Check it under Accounting → Payment Terms: one
+   "Net 45 PSA", line "45 days after end of month".
+3. As `sfsync`: `cd /opt/sfsync/SFODOOConnector && git pull --ff-only`.
+4. `python3 -m connector.check_connections`: both connections must log in.
+5. Check the next run's log: `Products matched by Id`, `matched by name (stamped)`, `created`, `missing`
+   in the `Done` line; `quotations cancelled` and `reopened`; `NOT written` if any.
+
+Views to check on the first upgrade: the order and quotation list ids and the search id in
+`sale_order_list_search_views.xml`, and the product form's `notebook` in `product_template_views.xml`,
+were written without a running Odoo 19 to check against. If an upgrade fails on one of them, fix that
+xpath or view id; the rest of the module does not depend on it.
+
 ## Checking the logs
 
 ```

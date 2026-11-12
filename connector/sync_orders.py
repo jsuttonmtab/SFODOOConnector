@@ -27,6 +27,9 @@ STAGE_AWARD_WON = config.STAGE_AWARD_WON
 STAGE_CLOSED = config.STAGE_CLOSED
 PLACEHOLDER_NEW_INVOICE_ADDRESS = "new invoice address"
 REVIEW_ACTIVITY_SUMMARY = "Salesforce stage left Award Won: review order"
+# Outcome phrases in the stage-reversal notes. note_posted() looks for "from <old> to <new>. <phrase>".
+ORDER_KEPT = "The order was not changed"
+QUOTE_CANCELLED = "The quotation was cancelled by the connector"
 
 OPP_FIELDS = [
     "Id", "Name", "AccountId", "Account.Name", "StageName", "CurrencyIsoCode", "Owner.Email",
@@ -40,7 +43,8 @@ OPP_FIELDS = [
 OPP_TYPES = {"New": "new", "Up-Sell": "up_sell", "Cross-Sell": "cross_sell", "Renewal": "renewal"}
 
 ORDER_FIELDS = [
-    "id", "sf_opportunity_id", "sf_stage", "partner_id", "company_id", "pricelist_id", "payment_term_id",
+    "id", "sf_opportunity_id", "sf_stage", "state", "sf_cancelled_by_sync", "partner_id", "company_id",
+    "pricelist_id", "payment_term_id",
     "user_id", "partner_invoice_id", "origin", "client_order_ref", "note", "sf_award_won_date",
     "sf_term_start_date", "sf_opportunity_type", "sf_description", "sf_invoice_notes",
     "sf_invoice_additional_info", "sf_billing_distribution_method", "sf_vat_number",
@@ -335,8 +339,16 @@ class OrderSync(AccountSync):
         if existing and self.lines.blocked(existing["id"], {line["Id"] for line in sf_lines}):
             self.order_error(opp, "a delivered line was removed in Salesforce; order not changed (§4.4)")
             return
+        # §3: a line whose product cannot be found (or created, with AUTO_CREATE_PRODUCTS off) fails the whole
+        # order. Products are resolved first, so nothing is written for this order.
+        missing = self.lines.unknown_products(sf_lines)
+        if missing:
+            self.order_error(opp, "order not synced: " + "; ".join(missing))
+            return
         if existing and existing.get("sf_stage") != STAGE_AWARD_WON and opp["StageName"] == STAGE_AWARD_WON:
             self.note_back_at_award_won(opp, existing)
+        if existing and existing.get("sf_cancelled_by_sync") and opp["StageName"] in (STAGE_AWARD_WON, STAGE_CLOSED):
+            self.reopen_quotation(opp, existing)
         ok, order_id = self.sync_header(opp, existing)
         if ok:
             self.lines.sync(opp, order_id, sf_lines, new_order=existing is None,
@@ -457,35 +469,98 @@ class OrderSync(AccountSync):
         return project["id"]
 
     def stage_reversal(self, opp, existing):
-        """§4.6: the opportunity left Award Won. The order is not changed. Post a note, add a To Do
-        for the Finance user, then record the new stage. Acts only when the stage changed since the
-        last run: an unchanged reversed order is counted silently and nothing is warned. Each step
-        checks Odoo first, so a run that failed part-way finishes on the next run without duplicates."""
+        """§4.6: the opportunity left Award Won. Acts only when the stage changed since the last run: an
+        unchanged reversed order is counted silently. Two cases:
+        - Unconfirmed quotation (draft or sent, or cancelled by this connector earlier): the quotation is
+          cancelled and a note says why. No To Do. It is reopened if the opportunity returns (reopen_quotation).
+        - Confirmed order, or a quotation cancelled by hand: the order is not changed. A note and a To Do
+          for the Finance user.
+        Each step checks Odoo first, so a run that failed part-way finishes on the next run without duplicates.
+        sf_stage is updated last."""
         new_stage = opp["StageName"]
         old_stage = existing.get("sf_stage")
         if old_stage == new_stage:
             self.counts["reversed_unchanged"] += 1
             return
-        # Logged only: the Salesforce error text states the reversal while it lasts (sf_writeback.py).
-        self.warn("stage moved out of Award Won (order not changed, review in Odoo)",
-                  f"{opp['Id']} {opp['Name']}: {show(old_stage)} -> {new_stage}")
         self.counts["stage_reversals"] += 1
+        if self.is_unconfirmed(existing):
+            # Logged only: the Salesforce error text states the cancellation while it lasts (sf_writeback.py).
+            self.warn("stage moved out of Award Won (quotation cancelled in Odoo)",
+                      f"{opp['Id']} {opp['Name']}: {show(old_stage)} -> {new_stage}")
+            self.cancel_quotation(opp, existing, show(old_stage), new_stage)
+        else:
+            self.warn("stage moved out of Award Won (order not changed, review in Odoo)",
+                      f"{opp['Id']} {opp['Name']}: {show(old_stage)} -> {new_stage}")
+            self.note_and_review(opp, existing, show(old_stage), new_stage)
 
-        body = (f"Salesforce stage changed from {show(old_stage)} to {new_stage}. "
-                "The order was not changed; please review it.")
-        if self.note_posted(existing["id"], show(old_stage), new_stage):
+        self.report_order("update sf_stage", opp, f"{show(old_stage)} -> {new_stage}")
+        if not self.dry_run:
+            self.odoo.write("sale.order", [existing["id"]], {"sf_stage": new_stage})
+
+    def is_unconfirmed(self, existing):
+        """True for a quotation the connector may cancel: still a draft or sent quotation, or one this
+        connector cancelled earlier (sf_cancelled_by_sync). A quotation cancelled by hand is not."""
+        state = existing.get("state")
+        return state in ("draft", "sent") or (state == "cancel" and bool(existing.get("sf_cancelled_by_sync")))
+
+    def cancel_quotation(self, opp, existing, old_stage, new_stage):
+        """Cancel the unconfirmed quotation and post a note. The flag is written before the cancel, so a run
+        that fails in between sees the quotation as the connector's and does not treat it as cancelled by hand."""
+        order_id = existing["id"]
+        if existing.get("state") != "cancel":
+            self.report_order("cancel quotation", opp, f"{old_stage} -> {new_stage}")
+            if not self.dry_run:
+                self.odoo.write("sale.order", [order_id], {"sf_cancelled_by_sync": True})
+                self.odoo.call("sale.order", "action_cancel", ids=[order_id])
+            existing["state"] = "cancel"
+            existing["sf_cancelled_by_sync"] = True
+            self.counts["quotations_cancelled"] += 1
+        body = (f"Salesforce stage changed from {old_stage} to {new_stage}. {QUOTE_CANCELLED}, "
+                f"because the opportunity left {STAGE_AWARD_WON}. It is reopened and resynced "
+                f"if the opportunity returns to {STAGE_AWARD_WON}.")
+        if self.note_posted(order_id, old_stage, new_stage, QUOTE_CANCELLED):
             self.counts["notes_already_posted"] += 1
         else:
-            self.report_order("post note", opp, f"{show(old_stage)} -> {new_stage}")
+            self.report_order("post note", opp, f"{old_stage} -> {new_stage}")
+            if not self.dry_run:
+                self.odoo.call("sale.order", "message_post", ids=[order_id], body=body,
+                               message_type="comment", subtype_xmlid="mail.mt_note")
+            self.counts["notes_posted"] += 1
+
+    def reopen_quotation(self, opp, existing):
+        """The opportunity is back at Award Won or Closed and this connector had cancelled its quotation:
+        set the same quotation back to draft, keep its number and history, and post a note. The header and
+        lines are then synced as usual. Only quotations the connector cancelled are reopened (the flag);
+        a quotation cancelled by hand never is. The state is set back before the flag is cleared, so a run
+        that fails in between still reopens it on the next run."""
+        order_id = existing["id"]
+        self.report_order("reopen quotation", opp, f"now {opp['StageName']}")
+        self.counts["quotations_reopened"] += 1
+        if not self.dry_run:
+            if existing.get("state") == "cancel":
+                self.odoo.call("sale.order", "action_draft", ids=[order_id])
+            self.odoo.write("sale.order", [order_id], {"sf_cancelled_by_sync": False})
+            self.odoo.call("sale.order", "message_post", ids=[order_id],
+                           body=(f"Salesforce stage is {opp['StageName']}. The quotation cancelled by the "
+                                 "connector was reopened (draft) and resynced."),
+                           message_type="comment", subtype_xmlid="mail.mt_note")
+        existing["state"] = "draft"
+        existing["sf_cancelled_by_sync"] = False
+
+    def note_and_review(self, opp, existing, old_stage, new_stage):
+        """A confirmed order (or a quotation cancelled by hand) that left Award Won: one note on the order
+        and a To Do for the Finance user. The order itself is not changed."""
+        body = (f"Salesforce stage changed from {old_stage} to {new_stage}. "
+                f"{ORDER_KEPT}; please review it.")
+        if self.note_posted(existing["id"], old_stage, new_stage, ORDER_KEPT):
+            self.counts["notes_already_posted"] += 1
+        else:
+            self.report_order("post note", opp, f"{old_stage} -> {new_stage}")
             if not self.dry_run:
                 self.odoo.call("sale.order", "message_post", ids=[existing["id"]], body=body,
                                message_type="comment", subtype_xmlid="mail.mt_note")
             self.counts["notes_posted"] += 1
         self.review_activity(opp, existing["id"], body)
-
-        self.report_order("update sf_stage", opp, f"{show(old_stage)} -> {new_stage}")
-        if not self.dry_run:
-            self.odoo.write("sale.order", [existing["id"]], {"sf_stage": new_stage})
 
     def last_return_id(self, order_id):
         """Id of the latest 'back at Award Won' marker on the order, or 0 if there is none."""
@@ -496,14 +571,15 @@ class OrderSync(AccountSync):
         ], ["id"])
         return max((r["id"] for r in rows), default=0)
 
-    def note_posted(self, order_id, old_stage, new_stage):
-        """True if this reversal's note is already on the order. Only notes posted after the order
-        last returned to Award Won count, so a repeat reversal to the same stage gets its own note."""
+    def note_posted(self, order_id, old_stage, new_stage, outcome):
+        """True if this reversal's note is already on the order. outcome is ORDER_KEPT or QUOTE_CANCELLED.
+        Only notes posted after the order last returned to Award Won count, so a repeat reversal to the
+        same stage gets its own note."""
         rows = self.odoo.search_read("mail.message", [
             ("model", "=", "sale.order"),
             ("res_id", "=", order_id),
             ("id", ">", self.last_return_id(order_id)),
-            ("body", "ilike", f"from {old_stage} to {new_stage}. The order was not changed"),
+            ("body", "ilike", f"from {old_stage} to {new_stage}. {outcome}"),
         ], ["id"])
         return bool(rows)
 
@@ -573,14 +649,16 @@ class OrderSync(AccountSync):
             f"\nDone ({mode}): created {c['created']}, updated {c['updated']}, unchanged {c['unchanged']}, "
             f"projects set {c['projects_set']}, already set {c['projects_already_set']}, "
             f"skipped {c['projects_skipped']}, "
-            f"stage reversals {c['stage_reversals']} (notes {c['notes_posted']}, To Dos {c['activities_created']}, "
+            f"stage reversals {c['stage_reversals']} (quotations cancelled {c['quotations_cancelled']}, "
+            f"reopened {c['quotations_reopened']}, notes {c['notes_posted']}, To Dos {c['activities_created']}, "
             f"already open {c['activities_already_open']}, back-at-Award-Won notes {c['back_notes_posted']}), "
             f"lines created {c['lines_created']}, updated {c['lines_updated']}, "
             f"unchanged {c['lines_unchanged']}, removed {c['lines_removed']}, "
             f"removal brake: {c['opps_braked']} opportunities braked, "
             f"run brake {'ON, removals skipped for ' + str(c['opps_removals_skipped']) + ' opportunities' if self.global_brake else 'off'}, "
             f"line change notes {c['line_notes_posted']}, "
-            f"products created {c['products_created']}, "
+            f"products matched by Id {c['products_matched_id']}, matched by name {c['products_matched_name']} "
+            f"(stamped {c['products_stamped']}), created {c['products_created']}, missing {c['products_missing']}, "
             f"invoice addresses created {c['invoice_addresses_created']}, "
             f"pricelists created {c['pricelists_created']}, errors {c['errors']}"
         )

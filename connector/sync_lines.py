@@ -67,14 +67,24 @@ class LineSync:
         self.dry_run = parent.dry_run
         self.counts = parent.counts
         self.by_order = {}          # order id -> [sale.order.line rows with sf_line_id]
-        self.products_code = {}     # default_code -> product id
-        self.products_name = {}     # lower-case name -> product id
-        self.created_products = {}  # SF code/name -> product id (or placeholder in dry run)
+        self.products_code = {}     # default_code -> product.product id
+        self.products_name = {}     # lower-case name -> product.product id
+        self.products_sf = {}       # sf_product_id (Product2.Id) -> product.product id
+        self.product_info = {}      # product.product id -> {"tmpl", "sf", "name"}
+        self.created_products = {}  # Salesforce key -> product id (or placeholder in dry run)
+        self.product_outcome = {}   # Salesforce key -> "id" / "name" / "created" / "missing", counted once
 
     # ----- reference data -----
 
     def load(self):
-        for product in self.odoo.search_read("product.product", [], ["id", "default_code", "name"]):
+        stamped = {t["id"]: t["sf_product_id"] or None for t in self.odoo.search_read(
+            "product.template", [], ["id", "sf_product_id"])}
+        for product in self.odoo.search_read("product.product", [], ["id", "default_code", "name", "product_tmpl_id"]):
+            tmpl = m2o_id(product["product_tmpl_id"])
+            sf_id = stamped.get(tmpl)
+            self.product_info[product["id"]] = {"tmpl": tmpl, "sf": sf_id, "name": product["name"] or ""}
+            if sf_id:
+                self.products_sf.setdefault(sf_id, product["id"])
             if product["default_code"]:
                 self.products_code.setdefault(product["default_code"], product["id"])
             if product["name"]:
@@ -98,45 +108,118 @@ class LineSync:
         print(f"ERROR line {sf_line['Id']} on {opp['Id']} {opp['Name']}: {message}")
 
     def resolve_product(self, sf_line, problems):
-        """Match Product2.ProductCode to default_code, then Product2.Name. Create if allowed."""
+        """Odoo product for one Salesforce line, or False with problems["product_id"] set. Order (§3):
+        1. The product whose sf_product_id is Product2.Id.
+        2. Only when no product has that Id: the same product code (default_code), then name. A product
+           found this way is stamped with the Id, so the next run matches it by Id. A product already
+           stamped with another Id is not used.
+        3. Otherwise, with AUTO_CREATE_PRODUCTS, a product is created with the Id. Without it the line
+           cannot be synced, and its order is not synced (sync_orders.OrderSync.create_or_update)."""
         product = sf_line.get("Product2") or {}
+        sf_id = text(sf_line.get("Product2Id"))
         code = text(product.get("ProductCode"))
         name = text(product.get("Name"))
-        pid = (self.products_code.get(code) if code else None) or (
-            self.products_name.get(name.lower()) if name else None)
-        if pid:
-            return pid
-
-        key = code or name
-        if not key:
+        if not sf_id and not code and not name:
             problems["product_id"] = "line has no product"
             return False
+        label = name or code or "unnamed product"
+        detail = label + (f", code {code}" if code else "") + (f", Salesforce {sf_id}" if sf_id else "")
+        key = sf_id or code or name
+
+        if sf_id and sf_id in self.products_sf:
+            self.outcome(key, "id")
+            return self.products_sf[sf_id]
         if key in self.created_products:
             return self.created_products[key]
+        pid, reason = self.fallback_match(code, name, sf_id)
+        if pid:
+            self.stamp(pid, sf_id)
+            self.outcome(key, "name")
+            return pid
         if not config.AUTO_CREATE_PRODUCTS:
-            problems["product_id"] = f"no Odoo product for {key!r}"
+            self.outcome(key, "missing")
+            problems["product_id"] = f"product not in Odoo: {detail}" + (f" ({reason})" if reason else "")
             return False
 
-        if self.dry_run:
-            pid = "new product"
-        else:
-            pid = self.odoo.create("product.product", [{
-                "name": name or code,
-                "default_code": code or False,
-                "sale_ok": True,
-                "type": "service",
-                "service_tracking": "no",  # never create tasks or projects from these products
-                "taxes_id": [(6, 0, [])],
-            }])[0]
-            if code:
-                self.products_code[code] = pid
-            if name:
-                self.products_name.setdefault(name.lower(), pid)
-            self.counts["products_created"] += 1
+        pid = self.create_product(code, name, sf_id)
         self.created_products[key] = pid
-        self.parent.warn("product created from Salesforce (AUTO_CREATE_PRODUCTS)",
-                         f"{code or '-'} {name or ''}".strip())
+        self.outcome(key, "created")
+        self.parent.warn("product created from Salesforce (AUTO_CREATE_PRODUCTS)", detail)
         return pid
+
+    def fallback_match(self, code, name, sf_id):
+        """(product id, None) for the code, then name, match. (None, reason) when the only match is a
+        product already stamped with another Salesforce Id, or when there is no match (reason None)."""
+        candidates = []
+        if code and code in self.products_code:
+            candidates.append(self.products_code[code])
+        if name and name.lower() in self.products_name:
+            candidates.append(self.products_name[name.lower()])
+        reason = None
+        for pid in candidates:
+            linked = self.product_info[pid]["sf"]
+            if linked and linked != sf_id:
+                reason = f"Odoo product {self.product_info[pid]['name']!r} is linked to another Salesforce product"
+                continue
+            return pid, None
+        return None, reason
+
+    def stamp(self, pid, sf_id):
+        """Set sf_product_id on the product's template, so the next run matches it by Id."""
+        info = self.product_info[pid]
+        if not sf_id or info["sf"] == sf_id:
+            return
+        if not self.dry_run:
+            self.odoo.write("product.template", [info["tmpl"]], {"sf_product_id": sf_id})
+        info["sf"] = sf_id
+        self.products_sf[sf_id] = pid
+        self.counts["products_stamped"] += 1
+        verb = "[dry-run] would stamp" if self.dry_run else "stamped"
+        print(f"{verb} product {info['name']!r} with Salesforce Id {sf_id}")
+
+    def create_product(self, code, name, sf_id):
+        """Create the product (service, no tasks, no taxes) with the Salesforce Id. Dry run: a placeholder."""
+        if self.dry_run:
+            return "new product"
+        vals = {
+            "name": name or code,
+            "default_code": code or False,
+            "sale_ok": True,
+            "type": "service",
+            "service_tracking": "no",  # never create tasks or projects from these products
+            "taxes_id": [(6, 0, [])],
+        }
+        if sf_id:
+            vals["sf_product_id"] = sf_id
+        pid = self.odoo.create("product.product", [vals])[0]
+        tmpl = m2o_id(self.odoo.search_read("product.product", [("id", "=", pid)], ["product_tmpl_id"])[0]["product_tmpl_id"])
+        self.product_info[pid] = {"tmpl": tmpl, "sf": sf_id, "name": name or code or ""}
+        if sf_id:
+            self.products_sf[sf_id] = pid
+        if code:
+            self.products_code.setdefault(code, pid)
+        if name:
+            self.products_name.setdefault(name.lower(), pid)
+        return pid
+
+    def outcome(self, key, kind):
+        """Count one Salesforce product once per run: matched by Id, matched by name (stamped), created,
+        or missing (not in Odoo, AUTO_CREATE_PRODUCTS off)."""
+        if key in self.product_outcome:
+            return
+        self.product_outcome[key] = kind
+        self.counts[{"id": "products_matched_id", "name": "products_matched_name",
+                     "created": "products_created", "missing": "products_missing"}[kind]] += 1
+
+    def unknown_products(self, sf_lines):
+        """One message per line whose product cannot be found or created. Empty when every product resolves.
+        Resolves products before any Odoo write for the order, so a failing order writes nothing."""
+        messages = []
+        for sf_line in sf_lines:
+            problems = {}
+            if not self.resolve_product(sf_line, problems):
+                messages.append(problems["product_id"])
+        return list(dict.fromkeys(messages))
 
     def line_vals(self, sf_line, problems):
         product = sf_line.get("Product2") or {}

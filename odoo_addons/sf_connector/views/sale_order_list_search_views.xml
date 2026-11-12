@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Source Document (origin) as Sales Order Name, in the order and quotation lists and the search.
+         View ids are from Odoo 19 sale; if an upgrade reports a missing view, check the id here first. -->
+    <record id="view_order_tree_sf_connector" model="ir.ui.view">
+        <field name="name">sale.order.list.sf_connector</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_tree"/>
+        <field name="arch" type="xml">
+            <xpath expr="//list" position="inside">
+                <field name="origin" string="Sales Order Name" optional="show"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_quotation_tree_sf_connector" model="ir.ui.view">
+        <field name="name">sale.quotation.list.sf_connector</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_quotation_tree_with_onboarding"/>
+        <field name="arch" type="xml">
+            <xpath expr="//list" position="inside">
+                <field name="origin" string="Sales Order Name" optional="show"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_sales_order_filter_sf_connector" model="ir.ui.view">
+        <field name="name">sale.order.search.sf_connector</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_sales_order_filter"/>
+        <field name="arch" type="xml">
+            <xpath expr="//search" position="inside">
+                <field name="origin" string="Sales Order Name"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

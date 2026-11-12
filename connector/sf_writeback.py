@@ -336,16 +336,24 @@ class WriteBack:
         if self._fields_ok("Opportunity"):
             opps = list({o["Id"]: o for o in opps}.values())
             ids = [o["Id"] for o in opps]
-            orders = {r["sf_opportunity_id"]: r["id"] for r in self._odoo_rows(
-                "sale.order", "sf_opportunity_id", ids, ["id", "sf_opportunity_id"])}
+            rows = self._odoo_rows("sale.order", "sf_opportunity_id", ids,
+                                   ["id", "sf_opportunity_id", "sf_cancelled_by_sync"])
+            orders = {r["sf_opportunity_id"]: r["id"] for r in rows}
+            cancelled = {r["sf_opportunity_id"] for r in rows if r.get("sf_cancelled_by_sync")}
             current = self._current("Opportunity", ids)
             for opp in opps:
                 sf_id = opp["Id"]
                 messages = list(issues.get(sf_id, []))
                 order_id = orders.get(sf_id)
                 if order_id and opp["StageName"] not in (config.STAGE_AWARD_WON, config.STAGE_CLOSED):
-                    messages.append(f"stage moved out of {config.STAGE_AWARD_WON}, order not changed, "
-                                    f"review in Odoo: Salesforce stage is {opp['StageName']}")
+                    if sf_id in cancelled:
+                        # The connector cancelled the quotation. The message goes when it is reopened.
+                        messages.append(f"quotation cancelled in Odoo because the opportunity left "
+                                        f"{config.STAGE_AWARD_WON} (Salesforce stage is {opp['StageName']}); "
+                                        f"it is reopened if the opportunity returns")
+                    else:
+                        messages.append(f"stage moved out of {config.STAGE_AWARD_WON}, order not changed, "
+                                        f"review in Odoo: Salesforce stage is {opp['StageName']}")
                 self._error_counts("Opportunity", messages)
                 desired = {"Odoo_Sync_Error__c": _error_text(_visible(messages))}
                 if order_id:

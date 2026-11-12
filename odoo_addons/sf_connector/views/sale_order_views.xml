@@ -16,6 +16,7 @@
                             <field name="sf_award_won_date" readonly="1"/>
                             <field name="sf_term_start_date" readonly="1"/>
                             <field name="sf_revenue_allocation_company_id" readonly="1"/>
+                            <field name="sf_cancelled_by_sync" readonly="1"/>
                         </group>
                         <group string="Billing">
                             <field name="sf_billing_distribution_method" readonly="1"/>
@@ -28,6 +29,11 @@
                         <field name="sf_description" readonly="1"/>
                     </group>
                 </page>
+            </xpath>
+
+            <!-- Source Document (origin) is shown as Sales Order Name. The field itself keeps its name. -->
+            <xpath expr="//field[@name='origin']" position="attributes">
+                <attribute name="string">Sales Order Name</attribute>
             </xpath>
 
             <!-- Salesforce line fields as optional columns in the order lines list -->

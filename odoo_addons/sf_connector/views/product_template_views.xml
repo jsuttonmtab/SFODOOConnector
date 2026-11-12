@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Salesforce ID on the product form, read-only: the connector sets it. -->
+    <record id="product_template_form_sf_connector" model="ir.ui.view">
+        <field name="name">product.template.form.sf_connector</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_only_form_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <page string="Salesforce" name="sf_connector">
+                    <group string="Salesforce">
+                        <field name="sf_product_id" readonly="1"/>
+                    </group>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>
