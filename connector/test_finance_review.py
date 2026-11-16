@@ -364,5 +364,64 @@ class CancelVerificationTests(unittest.TestCase):
         self.assertTrue(any("could not reopen quotation" in m for m in sync.issues[OPP_ID]))
 
 
+def odoo_line(line_id, sf_line_id, qty=2.0):
+    """An Odoo order line that carries a Salesforce line id, on order 1."""
+    return {"id": line_id, "sf_line_id": sf_line_id, "order_id": [1, "S00001"], "product_uom_qty": qty,
+            "qty_delivered": 0.0, "deliverable_delivered_count": 0, "sf_removed_in_sf": False}
+
+
+class ReversedOpportunityLineTests(unittest.TestCase):
+    """A reversed opportunity (stage left 07 / Closed) is not compared with its lines: nothing is removed, nothing
+    counts toward the removal brake, and no "products missing" message is written. Its lines are left untouched.
+    Both cases: a quotation cancelled by the connector, and a confirmed order."""
+
+    LINES = [{"Id": "00kA", "OpportunityId": OPP_ID}, {"Id": "00kB", "OpportunityId": OPP_ID}]
+
+    def setUp(self):
+        patcher = mock.patch.object(config, "FINANCE_ACTIVITY_USER", "finance@example.com")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def sync_for(self, row):
+        """An order sync as main() leaves it for a reversed opportunity: the order is known, no Salesforce
+        lines are fetched for it, and both Odoo lines are on the order."""
+        odoo = FakeOdoo({**BASE_TABLES, "sale.order": [row],
+                         "sale.order.line": [odoo_line(101, "00kA"), odoo_line(102, "00kB")]})
+        sync = make_order_sync(odoo)
+        sync.orders = {OPP_ID: row}
+        sync.sf_lines = {}
+        return sync, odoo
+
+    def assert_untouched(self, sync, odoo):
+        self.assertEqual(sync.brake, set())
+        self.assertFalse(sync.global_brake)
+        self.assertEqual(sync.counts["opps_braked"], 0)
+        self.assertEqual(sync.counts["opps_removals_skipped"], 0)
+        self.assertEqual(sync.issues[OPP_ID], [])  # no "products missing from Salesforce" message
+        self.assertEqual([e for e in odoo.log if e[1] == "sale.order.line"], [])  # no line write or create
+
+    def test_cancelled_quotation_is_not_compared_with_its_lines(self):
+        row = order_row("cancel", sf_stage=STAGE_07, cancelled=True)
+        sync, odoo = self.sync_for(row)
+        sync.plan_brakes([opp(STAGE_06)])
+        sync.stage_reversal(opp(STAGE_06), row)
+        self.assert_untouched(sync, odoo)
+
+    def test_confirmed_order_is_not_compared_with_its_lines(self):
+        row = order_row("sale", sf_stage=STAGE_07)
+        sync, odoo = self.sync_for(row)
+        sync.plan_brakes([opp(STAGE_06)])
+        sync.stage_reversal(opp(STAGE_06), row)
+        self.assert_untouched(sync, odoo)
+
+    def test_the_brake_still_applies_to_an_opportunity_in_stage_07(self):
+        # Control: the same two lines missing from Salesforce, but the opportunity is still at Award Won.
+        row = order_row("sale", sf_stage=STAGE_07)
+        sync, _ = self.sync_for(row)
+        sync.plan_brakes([opp(STAGE_07)])
+        self.assertEqual(sync.brake, {OPP_ID})
+        self.assertEqual(sync.counts["opps_braked"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

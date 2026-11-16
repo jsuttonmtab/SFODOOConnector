@@ -296,9 +296,13 @@ class OrderSync(AccountSync):
         are too large (docs/field-mapping.md §4.4). An opportunity is braked when its removals exceed
         SF_MAX_REMOVE_LINES, or SF_MAX_REMOVE_RATIO of its lines not already removed. When the removals of
         the whole run exceed SF_MAX_REMOVE_TOTAL, no removal is applied in the run. A braked opportunity
-        keeps its lines, and its Odoo_Sync_Error__c says so. --allow-mass-removal turns both brakes off."""
+        keeps its lines, and its Odoo_Sync_Error__c says so. --allow-mass-removal turns both brakes off.
+        A reversed opportunity (stage left 07 / Closed, §4.6) is not compared with its lines at all: its
+        lines are not fetched, so they are not "missing", and it adds nothing to the counts or the messages."""
         planned = {}  # opportunity Id -> (opportunity, removals, lines not already removed)
         for opp in opps:
+            if opp["StageName"] not in (STAGE_AWARD_WON, STAGE_CLOSED):
+                continue  # reversed: its order lines are left as they are while it is out of stage 07/Closed
             order = self.orders.get(opp["Id"])
             if not order:
                 continue
