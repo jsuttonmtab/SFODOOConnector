@@ -184,6 +184,22 @@ Views to check on the first upgrade: the order and quotation list ids and the se
 were written without a running Odoo 19 to check against. If an upgrade fails on one of them, fix that
 xpath or view id; the rest of the module does not depend on it.
 
+## Upgrade to sf_connector 19.0.1.7.0 (invoice PDFs)
+
+Order: upgrade the Odoo module first, then pull the code (same reason as 19.0.1.6.0 above).
+
+1. Odoo: Apps → sf_connector → **Upgrade**. New fields only (`sf_pdf_checksum`, `sf_pdf_sent_at` on invoices); no
+   migration. The new method `sf_invoice_pdf` is called through JSON-2 by the connector.
+2. The connector's Odoo API user needs read access to invoices, invoice lines and sale orders, the right to call
+   `account.move.sf_invoice_pdf`, and write access to `sf_pdf_checksum` and `sf_pdf_sent_at` on invoices.
+3. `git pull --ff-only`, then `python3 -m connector.check_connections`.
+4. Turn it on in `connector/.env` only after a dry run: `SF_INVOICE_PDF=true` (and `SF_INVOICE_PDF_REFUNDS`, default
+   true). Without `SF_WRITEBACK=true` nothing is written.
+5. The log line `Invoice PDFs (...): attached a, replaced r, unchanged u, failed f` ends the step. `FAILED` lines name
+   the invoice, the opportunity and the reason.
+
+Where to look in Salesforce: the opportunity's **Notes & Attachments** related list shows `<invoice number>.pdf`.
+
 ## Checking the logs
 
 ```

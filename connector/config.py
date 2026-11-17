@@ -56,6 +56,10 @@ SF_EXPECTED_ORG_ID = os.environ.get("SF_EXPECTED_ORG_ID", "").strip()
 # Line name (description) changes from Salesforce. Default false: a changed description is written to Odoo and
 # listed in the line change note. True: the change is reported in the log and the dry run, and NOT written.
 SF_HOLD_NAME_UPDATES = os.environ.get("SF_HOLD_NAME_UPDATES", "false").strip().lower() in ("1", "true", "yes")
+# Invoice PDFs attached to the Salesforce opportunity (docs/field-mapping.md §5.2). Needs SF_WRITEBACK too.
+# Default false: nothing is attached. Credit notes follow SF_INVOICE_PDF_REFUNDS (default true).
+SF_INVOICE_PDF = os.environ.get("SF_INVOICE_PDF", "false").strip().lower() in ("1", "true", "yes")
+SF_INVOICE_PDF_REFUNDS = os.environ.get("SF_INVOICE_PDF_REFUNDS", "true").strip().lower() in ("1", "true", "yes")
 # Default true: a real run (Odoo or Salesforce writes) is refused unless the connected Salesforce org
 # is a sandbox (Organization.IsSandbox). Set false only when the connector is pointed at production on purpose.
 SF_REQUIRE_SANDBOX = os.environ.get("SF_REQUIRE_SANDBOX", "true").strip().lower() in ("1", "true", "yes")

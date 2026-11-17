@@ -17,6 +17,7 @@ from . import config
 from .odoo_client import OdooClient, OdooError, m2o_id
 from .sf_client import SalesforceClient, SalesforceError, check_org, get_session, require_visible
 from .sf_writeback import write_accounts, write_opportunities
+from .sf_invoices import write_invoice_pdfs
 from .sync_lines import LineSync, fetch_sf_lines
 from .sync_accounts import (
     INVALID_EMAIL_SUFFIX, PENDING, AccountSync, build_parent_soql, comment_html,
@@ -778,6 +779,8 @@ def main(argv=None):
         return 1
     # After the Odoo side, so a Salesforce problem cannot stop the Odoo sync.
     unwritten += write_opportunities(sf, odoo, args.dry_run, opps, sync.issues, sync.sf_lines)
+    # Invoice PDFs of the synced orders (§5.2): after the order write-back, and never a reason to stop the run.
+    write_invoice_pdfs(sf, odoo, args.dry_run, opportunity=args.opportunity)
     # Exit codes are bits: 2 = run brake (removals skipped), 4 = Salesforce records not written. Both: 6.
     code = 0
     if sync.global_brake:

@@ -475,6 +475,24 @@ not allowed in filenames (e.g. `/`).
 
 **Open:** whether SF workflows depend on the invoice-number format.
 
+**Phase 2 (2026-11-16): the connector attaches the PDFs** (`connector/sf_invoices.py`, gated by `SF_WRITEBACK` and
+`SF_INVOICE_PDF`, default off):
+- Step 0 (read-only, the sandbox): five opportunities with `celigo_sfnsio__NetSuite_Id__c` all carry classic
+  `Attachment` records, none carry Files. Names `INV000980.pdf`, `INVG011498.pdf`; `ContentType` empty; body
+  75–94 KB; created by the integration user (Mike Martin's account). The integration user can create and update
+  Attachments (describe: createable, updateable).
+- Each posted customer invoice (`out_invoice`; `out_refund` when `SF_INVOICE_PDF_REFUNDS` is true) linked to a
+  synced order is attached to that order's opportunity as `<invoice number>.pdf`, "/" replaced by "-". An invoice
+  on two orders is attached once to each opportunity.
+- The PDF is the standard customer invoice report, rendered by `account.move.sf_invoice_pdf` (JSON-2). Its SHA-256
+  is stored on the invoice (`sf_pdf_checksum`), with `sf_pdf_sent_at`.
+- Unchanged: skipped without rendering when the PDF was sent after the invoice last changed (`write_date` no later than
+  `sf_pdf_sent_at`, 60 s allowance for the connector's own write). Otherwise rendered and compared with the attachment
+  (name, size and checksum). Changed (reset and re-posted): the attachment of the same name is replaced (PATCH on
+  `Attachment.Body`); no second one is added.
+- Known limit: a change that does not touch the invoice record itself (for example a partner address edited after
+  posting) is not detected until the invoice is saved again.
+
 The "NetSuite Financials" box on the opportunity (`celigo_sfnsio__NetSuite_Financial__c`,
 a list of invoices and payment status) is reportedly not used by CS. Not
 replicated for now.
