@@ -121,7 +121,7 @@ from `x_country` and is harmless.
 | `Id` | `sf_line_id` | NEW | Upsert key per line. Also copied to `lb.item.deliverable.sf_opportunity_line_id` (already exists there). |
 | `celigo_sfnsio__NetSuite_Line_Id__c` | — | NOT SYNCED | Legacy Celigo key, replaced by `sf_line_id`. Revisit only if NetSuite orders are migrated. |
 | `Product2Id` (→ `Product2.ProductCode`, `Product2.Name`) | `product_id` | LOOKUP (2026-10-28) | See the product rule below the table. Matched by Salesforce Id first (`product.template.sf_product_id`). Only when no product has that Id: by product code (`default_code`), then by name, and the match is stamped with the Id. Not found and `AUTO_CREATE_PRODUCTS` off: the line cannot be synced and **the whole order fails** with a Sales-visible message naming the product. |
-| `Combined_Product_Description__c` | `name` | OK | Line description. Locked once delivered/invoiced. A change is written and listed in the line change note as "description: old → new". With `SF_HOLD_NAME_UPDATES=true` (set 2026-11-12) the change is logged and not written. |
+| `Combined_Product_Description__c` | `sf_combined_description` (v19.0.1.8.0) | OK | Own field, printed after the product name. Locked once delivered/invoiced. A change is written and listed in the line change note as "description: old → new". With `SF_HOLD_NAME_UPDATES=true` the change is logged and not written. The line name is the product name only (v19.0.1.8.0): the product appears once. |
 | `Quantity` | `product_uom_qty` | OK | Cannot go below `qty_delivered`. |
 | `Total_Billable_Amount__c` | `price_unit` | OK | Ignored (price 0) on information-only lines. **Per unit**, not a line total: SF's own formula `Total_Billable_Amount_Quantity__c = Total_Billable_Amount__c * Quantity` proves it. Map straight to `price_unit`. Locked once `qty_invoiced > 0`. |
 | `Discount` | — | **Not in SF** | No discount field exists on OpportunityLineItem (or it's hidden from this user). `discount` stays 0; the billable amount is already net. |
@@ -501,12 +501,15 @@ replicated for now.
 
 ## 6. New fields summary (`sf_connector` Odoo module)
 
-Installed in **v19.0.1.6.0** (`odoo_addons/sf_connector`; v19.0.1.5.0 before the Finance review):
+Installed in **v19.0.1.8.0** (`odoo_addons/sf_connector`; v19.0.1.6.0 and v19.0.1.7.0 before this change):
 
+- `account.move`: `sf_pdf_checksum`, `sf_pdf_sent_at` (v19.0.1.7.0; invoice PDF attached to Salesforce, §5.2)
+- `account.move.line`: `sf_combined_description`, `sf_information_only` (v19.0.1.8.0; copied from the sale line)
+- `res.company`: invoice layout and per-company text (v19.0.1.8.0; see §5.3)
 - `res.partner`: `sf_account_id`, `sf_legal_entity_name`, `sf_billing_distribution_method`, `sf_default_billing_entity_id`, `sf_parent_account_id` (readonly; SF ParentId, not `parent_id`, see §1), `sf_vat_rejected` (readonly; SF VAT that Odoo rejected, see §1 VAT handling)
 - `sale.order`: `sf_opportunity_id`, `sf_revenue_allocation_company_id`, `sf_award_won_date`, `sf_term_start_date`, `sf_opportunity_type`, `sf_description`, `sf_invoice_notes`, `sf_invoice_additional_info`, `sf_billing_distribution_method`, `sf_vat_number`, `sf_stage`, `sf_cancelled_by_sync` (readonly; set by the connector when it cancels an unconfirmed quotation, §4.6)
 - `product.template`: `sf_product_id` (readonly; Salesforce Product2 Id, unique where set, §3)
-- `sale.order.line`: `sf_line_id`, `sf_data_vendor`, `sf_coverage_period`, `sf_study_type`, `sf_study_name`, `sf_wave_period`, `sf_delivery`, `sf_information_only`, `sf_is_upsell`, `sf_on_hold`, `sf_removed_in_sf`, `sf_term_start_date`, `sf_term_end_date`, `sf_billing_schedule`
+- `sale.order.line`: `sf_combined_description` (v19.0.1.8.0; the Salesforce description, printed after the product name), `sf_line_id`, `sf_data_vendor`, `sf_coverage_period`, `sf_study_type`, `sf_study_name`, `sf_wave_period`, `sf_delivery`, `sf_information_only`, `sf_is_upsell`, `sf_on_hold`, `sf_removed_in_sf`, `sf_term_start_date`, `sf_term_end_date`, `sf_billing_schedule`
 
 Also installed:
 
@@ -583,4 +586,21 @@ sf data query --query "SELECT ContentDocument.Title, ContentDocument.FileExtensi
 | 2026-10-28 | Net 45 PSA: due 45 days after the end of the invoice month (Finance review). Existing term updated in place by the 19.0.1.6.0 migration | Finance |
 | 2026-10-28 | Stage reversal of an unconfirmed quotation (draft or sent): cancel it, note why, no To Do. Confirmed orders keep the note and To Do. Reopen only quotations the connector cancelled (`sf_cancelled_by_sync`) when the opportunity returns | Finance |
 | 2026-10-28 | Source Document shown as "Sales Order Name" in the order views (label only, field not renamed) | Finance |
+| 2026-11-17 | Information-only lines stay on the order and are invoiced at 0, but are not printed on the invoice or the quotation/sales order PDF. They still create deliverables | Finance and Salesforce admin (test session) |
+| 2026-11-17 | The Salesforce description (Combined_Product_Description__c) is its own field, sf_combined_description. The line name is the product name only, so the product appears once; the description is printed after it | Finance and Salesforce admin (test session) |
+| 2026-11-17 | Invoice layout per company (mTab LLC: US Letter; G.A.M.M.A: A4), from the NetSuite PDFs. Text, notes, wire instructions, legal paragraph and footer are per-company settings, not code | Finance |
 | 2026-10-28 | Products matched by Salesforce Id first; code and name are the fallback and stamp the Id. A line whose product is not found (AUTO_CREATE_PRODUCTS off) fails its whole order with a Sales-visible message | Finance |
+
+### 5.3 Invoice layout (v19.0.1.8.0)
+
+One QWeb invoice template (`sf_connector.report_sf_invoice`), two report actions: mTab LLC on US Letter and G.A.M.M.A
+on A4. Print and the Salesforce attachment (§5.2) use the company's layout. The template matches the NetSuite
+layouts (`INV001825.pdf`, mTab LLC; `INVG011392.pdf`, G.A.M.M.A).
+
+- Lines: product name, then the Salesforce description in italics in brackets. Information-only lines are skipped.
+  LLC columns: Item, Total cost (the sale order line's subtotal), Amount invoiced (this invoice line). G.A.M.M.A: Item, Amount.
+- Early payment box: "Balance due if paid by <invoice date + days> (-x%)" with the amount. Display only.
+- Per-company settings (Settings → Companies → Invoice Layout): layout, trading name, tax ID, header block, notes,
+  payment and wire instructions, legal paragraph (LLC), footer, and the two early-payment offers (days and percent).
+- Not verified against Odoo 19 yet: the paper format codes (`Letter`, `A4`), the page footer (`web.internal_layout`
+  for the "x/y" page number), and the Print override (`action_invoice_print`).

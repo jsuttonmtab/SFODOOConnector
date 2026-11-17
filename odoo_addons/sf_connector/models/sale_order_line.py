@@ -62,6 +62,13 @@ class SaleOrderLine(models.Model):
         string='Billing Schedule',
     )
 
+    # Salesforce Combined_Product_Description__c, e.g. "2025 W4 USA NVES". Its own field, so the line name is the
+    # product name only and the product appears once. Printed after the product name on the invoice.
+    sf_combined_description = fields.Char(
+        string='Combined Product Description',
+        help='Salesforce Combined_Product_Description__c. Read-only in Odoo: the connector writes it.',
+    )
+
     _sf_line_id_unique = models.Constraint(
         'UNIQUE(sf_line_id)',
         'Another order line already has this Salesforce Line ID.',
@@ -101,3 +108,13 @@ class SaleOrderLine(models.Model):
                 'sf_connector: could not set deliverable hold=%s for order lines %s',
                 on_hold, self.ids,
             )
+
+    def _prepare_invoice_line(self, **optional_values):
+        """Carry the Salesforce description and the information-only flag to the invoice line, so the invoice
+        report can print the description after the product name and leave information-only lines off."""
+        vals = super()._prepare_invoice_line(**optional_values)
+        vals.update({
+            'sf_combined_description': self.sf_combined_description or False,
+            'sf_information_only': bool(self.sf_information_only),
+        })
+        return vals

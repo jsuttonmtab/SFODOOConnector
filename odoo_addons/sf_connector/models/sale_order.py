@@ -65,3 +65,10 @@ class SaleOrder(models.Model):
         'UNIQUE(sf_opportunity_id)',
         'Another sales order already has this Salesforce Opportunity ID.',
     )
+
+    def _get_order_lines_to_report(self, *args, **kwargs):
+        """Lines printed on the quotation and sales order PDF. Information-only lines (sf_information_only) are on the
+        order and are invoiced at 0, but are not printed (decided with Finance, 2026-11-17, option B). The standard
+        report calls this hook; if an Odoo version does not, this override is simply not used."""
+        lines = super()._get_order_lines_to_report(*args, **kwargs)
+        return lines.filtered(lambda line: not line.sf_information_only)

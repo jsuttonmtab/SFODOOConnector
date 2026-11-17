@@ -184,6 +184,36 @@ Views to check on the first upgrade: the order and quotation list ids and the se
 were written without a running Odoo 19 to check against. If an upgrade fails on one of them, fix that
 xpath or view id; the rest of the module does not depend on it.
 
+## Upgrade to sf_connector 19.0.1.8.0 (information-only lines, description field, invoice layout)
+
+Order: upgrade the Odoo module first, then pull the code.
+
+1. Odoo: Apps → sf_connector → **Upgrade**. Migration `19.0.1.8.0/post-migrate.py` runs: for every order line whose name
+   differs from its product name, the name moves to `sf_combined_description` and the name becomes the product name.
+   Check a few lines afterwards: the name is the product name; the description is in the new column.
+2. Odoo: Settings → Companies → each company → **Invoice Layout** tab. Fill in (see the list below). Empty fields print nothing.
+3. Odoo: print one invoice per company. Check the paper size (Letter for mTab LLC, A4 for G.A.M.M.A).
+4. `git pull --ff-only`, then `python3 -m connector.check_connections`.
+5. The connector now writes `sf_combined_description`, not the line name. `SF_HOLD_NAME_UPDATES` (true for now) holds
+   changes to it. The run log says `description held (SF_HOLD_NAME_UPDATES) line ...`.
+
+**Per-company settings to fill in** (Settings → Companies → Invoice Layout):
+- mTab LLC: trading name (empty), tax ID, header block (empty), notes, payment and wire instructions, legal payment
+  paragraph, footer (finance and support emails, website, phone, legal name and registration line).
+- G.A.M.M.A: trading name "A trading name of GAMMA ASSOCIATES LTD.", header block (the Registered Office block with
+  the VAT number), notes, payment and wire instructions, footer.
+- Both: early payment offers (days and percent). Defaults: 10 days, 3%; 21 days, 2%.
+
+**Test with the Salesforce admin**
+- Information-only line: it is on the order and invoiced at 0, but it is not printed on the invoice or on the
+  quotation. Its deliverables still appear in the Delivery Tracker.
+- Description: an opportunity line shows the product name once on the invoice, with its Salesforce description after it
+  in brackets, in italics.
+- Description change in Salesforce: the Odoo line keeps its old description while `SF_HOLD_NAME_UPDATES` is true; the
+  log shows it as held.
+- Fulfilment (issue C) still open: see the note in the summary; Delivered quantity on the Salesforce line is not yet
+  confirmed against the Delivery Tracker.
+
 ## Upgrade to sf_connector 19.0.1.7.0 (invoice PDFs)
 
 Order: upgrade the Odoo module first, then pull the code (same reason as 19.0.1.6.0 above).

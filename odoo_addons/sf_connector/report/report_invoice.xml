@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Paper: mTab LLC prints on US Letter, G.A.M.M.A on A4 (the NetSuite layouts). -->
+    <record id="paperformat_sf_letter" model="report.paperformat">
+        <field name="name">SF Invoice - US Letter</field>
+        <field name="default" eval="False"/>
+        <field name="format">Letter</field>
+        <field name="orientation">Portrait</field>
+        <field name="margin_top">45</field>
+        <field name="margin_bottom">28</field>
+        <field name="margin_left">14</field>
+        <field name="margin_right">14</field>
+        <field name="header_line" eval="False"/>
+        <field name="header_spacing">35</field>
+        <field name="dpi">90</field>
+    </record>
+    <record id="paperformat_sf_a4" model="report.paperformat">
+        <field name="name">SF Invoice - A4</field>
+        <field name="default" eval="False"/>
+        <field name="format">A4</field>
+        <field name="orientation">Portrait</field>
+        <field name="margin_top">45</field>
+        <field name="margin_bottom">28</field>
+        <field name="margin_left">14</field>
+        <field name="margin_right">14</field>
+        <field name="header_line" eval="False"/>
+        <field name="header_spacing">35</field>
+        <field name="dpi">90</field>
+    </record>
+
+    <record id="report_sf_invoice_llc" model="ir.actions.report">
+        <field name="name">Invoice (mTab LLC)</field>
+        <field name="model">account.move</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">sf_connector.report_sf_invoice</field>
+        <field name="report_file">sf_connector.report_sf_invoice</field>
+        <field name="print_report_name">(object.name or 'Invoice').replace('/', '-')</field>
+        <field name="paperformat_id" ref="paperformat_sf_letter"/>
+    </record>
+    <record id="report_sf_invoice_gamma" model="ir.actions.report">
+        <field name="name">Invoice (G.A.M.M.A)</field>
+        <field name="model">account.move</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">sf_connector.report_sf_invoice</field>
+        <field name="report_file">sf_connector.report_sf_invoice</field>
+        <field name="print_report_name">(object.name or 'Invoice').replace('/', '-')</field>
+        <field name="paperformat_id" ref="paperformat_sf_a4"/>
+    </record>
+
+    <template id="report_sf_invoice">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="o">
+                <t t-call="sf_connector.report_sf_invoice_document" t-lang="o.partner_id.lang"/>
+            </t>
+        </t>
+    </template>
+
+    <template id="report_sf_invoice_document">
+        <t t-set="c" t-value="o.company_id"/>
+        <t t-set="gamma" t-value="c.sf_invoice_layout == 'gamma'"/>
+        <t t-set="lines" t-value="o.invoice_line_ids.filtered(lambda l: l.display_type == 'product' and not l.sf_information_only)"/>
+        <t t-set="offers" t-value="o.sf_early_payment_offers()"/>
+        <t t-call="web.internal_layout">
+            <div class="page" style="font-size: 10pt;">
+                <!-- Header: logo left; title and company block right -->
+                <table style="width: 100%;">
+                    <tr>
+                        <td style="width: 45%; vertical-align: top;">
+                            <img t-if="c.logo" t-att-src="image_data_uri(c.logo)" style="max-height: 70px;" alt="Logo"/>
+                        </td>
+                        <td style="width: 55%; vertical-align: top; text-align: right;">
+                            <h2 style="margin: 0;">Invoice <span t-field="o.name"/></h2>
+                            <div t-if="gamma and c.sf_trading_name" style="font-style: italic;">
+                                <span t-esc="c.sf_trading_name"/>
+                            </div>
+                            <t t-if="not gamma">
+                                <div><strong t-esc="c.name"/></div>
+                                <div t-if="c.street" t-esc="c.street"/>
+                                <div t-if="c.street2" t-esc="c.street2"/>
+                                <div><span t-if="c.zip" t-esc="c.zip"/> <span t-if="c.city" t-esc="c.city"/></div>
+                                <div t-if="c.country_id" t-esc="c.country_id.name"/>
+                                <div t-if="c.website" t-esc="c.website"/>
+                                <div t-if="c.sf_tax_id">Tax ID: <span t-esc="c.sf_tax_id"/></div>
+                            </t>
+                            <t t-if="gamma">
+                                <div t-if="c.sf_header_html" t-field="c.sf_header_html"/>
+                            </t>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- Info row: bill to, date, PO, tax registration, terms; total on the right -->
+                <table style="width: 100%; margin-top: 16px;">
+                    <tr>
+                        <td style="width: 60%; vertical-align: top;">
+                            <div><strong>Bill To</strong></div>
+                            <div t-field="o.partner_id" t-options='{"widget": "contact", "fields": ["name", "address"], "no_marker": true}'/>
+                            <div style="margin-top: 8px;">
+                                <div><strong>Date:</strong> <span t-field="o.invoice_date"/></div>
+                                <div><strong>PO #:</strong> <span t-esc="o.client_order_ref or 'N/A'"/></div>
+                                <div><strong>Tax Reg. Number:</strong> <span t-esc="o.partner_id.vat or ''"/></div>
+                                <div><strong>TERMS:</strong> <span t-esc="o.invoice_payment_term_id.name or ''"/></div>
+                            </div>
+                        </td>
+                        <td style="width: 40%; vertical-align: top; text-align: right;">
+                            <div>TOTAL</div>
+                            <div style="font-size: 22pt; font-weight: bold;">
+                                <span t-field="o.amount_total"/>
+                            </div>
+                            <div style="margin-top: 4px;">Due Date: <span t-field="o.invoice_date_due"/></div>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- Lines: product name, then the Salesforce description in italics -->
+                <table class="table table-sm" style="width: 100%; margin-top: 18px; border-collapse: collapse;">
+                    <thead>
+                        <tr style="border-bottom: 1px solid #000;">
+                            <th style="text-align: left;">Item</th>
+                            <t t-if="not gamma">
+                                <th style="text-align: right;">Total cost</th>
+                                <th style="text-align: right;">Amount invoiced</th>
+                            </t>
+                            <t t-if="gamma">
+                                <th style="text-align: right;">Amount</th>
+                            </t>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr t-foreach="lines" t-as="line">
+                            <td>
+                                <span t-field="line.name"/>
+                                <t t-if="line.sf_combined_description">
+                                    (<i t-esc="line.sf_combined_description"/>)
+                                </t>
+                            </td>
+                            <t t-if="not gamma">
+                                <td style="text-align: right;">
+                                    <span t-esc="line.sale_line_ids[:1].price_subtotal if line.sale_line_ids else line.price_subtotal"
+                                          t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                                </td>
+                                <td style="text-align: right;">
+                                    <span t-field="line.price_subtotal"/>
+                                </td>
+                            </t>
+                            <t t-if="gamma">
+                                <td style="text-align: right;">
+                                    <span t-field="line.price_subtotal"/>
+                                </td>
+                            </t>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <!-- Totals -->
+                <table style="width: 40%; margin-left: auto; margin-top: 10px;">
+                    <tr>
+                        <td>Subtotal</td>
+                        <td style="text-align: right;"><span t-field="o.amount_untaxed"/></td>
+                    </tr>
+                    <tr>
+                        <td>Tax<t t-if="gamma"> (<span t-esc="'%g' % round(100.0 * o.amount_tax / o.amount_untaxed, 2) if o.amount_untaxed else 0"/>%)</t></td>
+                        <td style="text-align: right;"><span t-field="o.amount_tax"/></td>
+                    </tr>
+                    <tr style="border-top: 1px solid #000; font-weight: bold;">
+                        <td>Total</td>
+                        <td style="text-align: right;"><span t-field="o.amount_total"/></td>
+                    </tr>
+                </table>
+
+                <!-- Early payment discount offers (display only) -->
+                <div t-if="offers" style="border: 1px solid #000; padding: 8px; margin-top: 14px;">
+                    <t t-foreach="offers" t-as="offer">
+                        <div>
+                            Balance due if paid by <span t-esc="offer['date']" t-options='{"widget": "date"}'/>
+                            (-<span t-esc="'%g' % offer['percent']"/>%):
+                            <span t-esc="offer['amount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                        </div>
+                    </t>
+                </div>
+
+                <!-- Per-company text: entered in Settings → Companies, never hard-coded -->
+                <div t-if="c.sf_notes_html" style="margin-top: 12px;" t-field="c.sf_notes_html"/>
+                <div t-if="c.sf_payment_html" style="margin-top: 8px;" t-field="c.sf_payment_html"/>
+                <div t-if="not gamma and c.sf_legal_html" style="margin-top: 8px;" t-field="c.sf_legal_html"/>
+                <div t-if="c.sf_footer_html" style="margin-top: 14px; font-size: 8pt;" t-field="c.sf_footer_html"/>
+            </div>
+        </t>
+    </template>
+</odoo>

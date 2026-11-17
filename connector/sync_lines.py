@@ -29,7 +29,7 @@ LINE_FIELDS = [
     "sf_billing_schedule", "year_of_study", "country_region", "version", "item_description",
     "sf_data_vendor", "sf_coverage_period", "sf_study_type", "sf_study_name", "sf_wave_period",
     "sf_delivery", "sf_is_upsell", "sf_information_only", "sf_on_hold", "sf_term_start_date",
-    "sf_term_end_date",
+    "sf_term_end_date", "sf_combined_description",
 ]
 
 LINE_M2O = {"product_id"}
@@ -61,12 +61,13 @@ def fetch_sf_lines(sf, opp_ids):
 
 
 def hold_name_changes(changes):
-    """Split the line changes into (to write, held). With SF_HOLD_NAME_UPDATES true, a change to the line name is
-    held: it is returned in held, for the log, and is not written to Odoo. Other changes are unaffected."""
+    """Split the line changes into (to write, held). With SF_HOLD_NAME_UPDATES true, a change to the Salesforce
+    description (sf_combined_description, the line's Combined_Product_Description__c) is held: it is returned in held,
+    for the log, and is not written to Odoo. Other changes are unaffected."""
     if not config.SF_HOLD_NAME_UPDATES:
         return changes, []
-    held = [change for change in changes if change[0] == "name"]
-    return [change for change in changes if change[0] != "name"], held
+    held = [change for change in changes if change[0] == "sf_combined_description"]
+    return [change for change in changes if change[0] != "sf_combined_description"], held
 
 
 class LineSync:
@@ -231,16 +232,21 @@ class LineSync:
         return list(dict.fromkeys(messages))
 
     def line_vals(self, sf_line, problems):
+        """Odoo values for one Salesforce line. The line name is the product name only (so the product appears
+        once on the invoice). The Salesforce description, Combined_Product_Description__c, goes to
+        sf_combined_description, and is printed after the name."""
         product = sf_line.get("Product2") or {}
         product_id = self.resolve_product(sf_line, problems)
-        name = text(sf_line.get("Combined_Product_Description__c")) or text(product.get("Name")) or False
+        combined = text(sf_line.get("Combined_Product_Description__c")) or False
+        name = text(product.get("Name")) or combined or False
         if not name:
-            problems["name"] = "line has no description"
+            problems["name"] = "line has no product name or description"
         billing = text(sf_line.get("Billing_Schedule__c"))
         info_only = bool(sf_line.get("Information_Only__c"))
         vals = {
             "product_id": product_id,
             "name": name,
+            "sf_combined_description": combined,
             "product_uom_qty": float(sf_line.get("Quantity") or 0),
             "price_unit": 0.0 if info_only else float(sf_line.get("Total_Billable_Amount__c") or 0),
             "discount": 0.0,
@@ -267,7 +273,8 @@ class LineSync:
         return vals
 
     def apply_locks(self, rec, vals, opp, sf_line):
-        """§4.4 locked-field rules. A locked field that would change is dropped and reported."""
+        """§4.4 locked-field rules. A locked field that would change is dropped and reported. The name and the
+        Salesforce description are locked once the line is delivered or invoiced."""
         delivered = max(rec["qty_delivered"] or 0, rec["deliverable_delivered_count"] or 0)
         invoiced = rec["qty_invoiced"] or 0
 
@@ -286,6 +293,8 @@ class LineSync:
             reject("sf_billing_schedule", "line is invoiced")
         if (delivered or invoiced) and changes("name"):
             reject("name", "line is delivered or invoiced")
+        if (delivered or invoiced) and changes("sf_combined_description"):
+            reject("sf_combined_description", "line is delivered or invoiced")
 
     # ----- run -----
 
@@ -322,15 +331,15 @@ class LineSync:
         return f"{info['symbol']}{number}"
 
     def changed_text(self, rec, changes, sf_line, currency):
-        """One sentence for an updated line, or None if no Finance/CS-facing field changed. A description
-        change (the line name, from Salesforce) is listed as "description: old → new"."""
+        """One sentence for an updated line, or None if no Finance/CS-facing field changed. A change of the
+        Salesforce description (sf_combined_description) is listed as "description: old → new"."""
         by_field = {f: (c, w) for f, c, w in changes}
         clauses = []
         if "product_id" in by_field:
             old = rec["product_id"][1] if isinstance(rec["product_id"], (list, tuple)) else "-"
             clauses.append(f"product {old} → {self.sf_product_name(sf_line)}")
-        if "name" in by_field:
-            c, w = by_field["name"]
+        if "sf_combined_description" in by_field:
+            c, w = by_field["sf_combined_description"]
             clauses.append(f"description: {show(c)} → {show(w)}")
         if "product_uom_qty" in by_field:
             c, w = by_field["product_uom_qty"]
@@ -371,8 +380,8 @@ class LineSync:
         """Create, update and remove lines of one order. order_id is None only in a dry run for a
         new order, where the lines are counted but not created. Changes to an existing order are
         posted as ONE note per run; a new order gets no note. allow_removals False (the removal brake)
-        skips the removals of this order; creates and updates still apply. A held line name (see
-        hold_name_changes) is logged and not written, and is not in the note."""
+        skips the removals of this order; creates and updates still apply. A held Salesforce description
+        (see hold_name_changes) is logged and not written, and is not in the note."""
         existing = {rec["sf_line_id"]: rec for rec in self.by_order.get(order_id, [])} if order_id else {}
         sf_ids = {line["Id"] for line in sf_lines}
         currency = opp.get("CurrencyIsoCode")
@@ -402,7 +411,7 @@ class LineSync:
             changes, held = hold_name_changes(diff(rec, vals, LINE_M2O))
             for _, current, wanted in held:
                 self.counts["names_held"] += 1
-                print(f"name held (SF_HOLD_NAME_UPDATES) line {sf_id} on {opp['Id']} {opp['Name']}: "
+                print(f"description held (SF_HOLD_NAME_UPDATES) line {sf_id} on {opp['Id']} {opp['Name']}: "
                       f"{show(current)} -> {show(wanted)}")
             if not changes:
                 self.counts["lines_unchanged"] += 1
