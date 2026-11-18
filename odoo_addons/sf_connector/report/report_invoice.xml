@@ -107,7 +107,7 @@
                         </td>
                         <td style="width: 20%; vertical-align: top;">
                             <div style="color: #1f5f99; font-weight: bold;">PO #</div>
-                            <div t-esc="o.client_order_ref or 'N/A'"/>
+                            <div t-esc="o.sf_po_number()"/>
                         </td>
                         <td style="width: 24%; vertical-align: top; text-align: right;">
                             <div style="color: #1f5f99; font-weight: bold;">TOTAL</div>

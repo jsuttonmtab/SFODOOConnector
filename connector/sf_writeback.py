@@ -39,6 +39,8 @@ TEXT = {"Odoo_Record__c", "Odoo_Sync_Error__c"}
 INT = {"Odoo_ID__c", "Odoo_Line_ID__c"}
 QTY = {"Odoo_Qty_Delivered__c", "Odoo_Qty_Invoiced__c"}
 BOOL = {"Odoo_Fulfilled__c"}
+# Types a delivered counter may have in the org (a number, or text as Celigo wrote it).
+DELIVERED_TYPES = {"double", "int", "percent", "string"}
 
 
 def _chunks(items, size):
@@ -60,12 +62,13 @@ def _show(value):
 
 
 def _norm(field, value):
-    """Comparable form of one field's value. Blank and null compare equal."""
+    """Comparable form of one field's value. Blank and null compare equal. The delivered counter is compared as a
+    number, whether the org stores it as a number or as text."""
     if field in TEXT:
         return (value or "").replace("\r\n", "\n").strip()
     if field in INT:
         return None if value is None or value == "" else int(value)
-    if field in QTY:
+    if field in QTY or (config.SF_DELIVERED_FIELD and field == config.SF_DELIVERED_FIELD):
         return round(float(value or 0), 2)
     if field in BOOL:
         return bool(value)
@@ -105,9 +108,11 @@ def _visible(messages, has_order=True):
 
 
 def _line_values(rec):
-    """§5.1 quantities and fulfilment for one order line. Deliverable lines (professional services)
-    use their deliverable count and are fulfilled when all deliverables are. Other lines
-    (subscriptions) are fulfilled when fully invoiced."""
+    """§5.1 quantities and fulfilment for one order line. "Delivered" is the Delivery Tracker's delivered mark:
+    the delivered count of a deliverable line (deliverable_delivered_count), and qty_delivered of any other line.
+    A deliverable line (deliverable_count > 0) is fulfilled when all its deliverables are delivered. Other lines
+    (subscriptions) are fulfilled when fully invoiced. The delivered value also goes to the org's delivered counter
+    when SF_DELIVERED_FIELD names one."""
     invoiced = rec["qty_invoiced"] or 0
     if (rec["deliverable_count"] or 0) > 0:
         delivered = rec["deliverable_delivered_count"] or 0
@@ -116,12 +121,15 @@ def _line_values(rec):
         delivered = rec["qty_delivered"] or 0
         quantity = rec["product_uom_qty"] or 0
         fulfilled = quantity > 0 and round(invoiced, 2) >= round(quantity, 2)
-    return {
+    values = {
         "Odoo_Line_ID__c": rec["id"],
         "Odoo_Qty_Delivered__c": delivered,
         "Odoo_Qty_Invoiced__c": invoiced,
         "Odoo_Fulfilled__c": fulfilled,
     }
+    if config.SF_DELIVERED_FIELD:
+        values[config.SF_DELIVERED_FIELD] = delivered
+    return values
 
 
 # Opportunity Ids named in a FIELD_INTEGRITY_EXCEPTION message: 15 or 18 characters, key prefix 006.
@@ -171,20 +179,33 @@ class WriteBack:
         check_org(self.sf, self.dry_run, log=False)  # the run has already logged the org
         return True
 
+    def _required(self, sobject):
+        """The fields write-back needs on the object: REQUIRED, plus the delivered counter on OpportunityLineItem when
+        SF_DELIVERED_FIELD names one. The counter may be a number or text; its type is checked in _fields_ok."""
+        fields = dict(REQUIRED[sobject])
+        if sobject == "OpportunityLineItem" and config.SF_DELIVERED_FIELD:
+            fields[config.SF_DELIVERED_FIELD] = "delivered"
+        return fields
+
     def _fields_ok(self, sobject):
-        """True if every field write-back needs exists on the object, with the right type, and is
-        updateable. Names are matched without regard to case, as Salesforce does. The org's own API name of
-        each field is taken from describe (see _api). A case difference is announced once per run. A failing
-        object is skipped in a real run and in a dry run alike: its current values cannot be read without the
-        fields, so a dry run reports what a real run would stop on, and nothing more."""
+        """True if every field write-back needs exists on the object, with the right type, and is updateable. Names
+        are matched without regard to case, as Salesforce does. The org's own API name of each field is taken from
+        describe (see _api). A case difference is announced once per run. A failing object is skipped in a real run
+        and in a dry run alike: its current values cannot be read without the fields, so a dry run reports what a
+        real run would stop on, and nothing more."""
         if sobject not in self.fields_ok:
             described = _field_map(self.sf, sobject)
             announced = self.sf.session.__dict__.setdefault("announced_case", set())
             problems = []
-            for name, sf_type in REQUIRED[sobject].items():
+            for name, sf_type in self._required(sobject).items():
                 field = described.get(name.lower())
                 if field is None:
                     problems.append(f"{name} does not exist or is not visible to the integration user")
+                elif sf_type == "delivered":
+                    if field["type"] not in DELIVERED_TYPES:
+                        problems.append(f"{name} is {field['type']}, expected a number or text")
+                    elif not field["updateable"]:
+                        problems.append(f"{name} is not updateable by the integration user")
                 elif field["type"] != sf_type:
                     problems.append(f"{name} is {field['type']}, expected {sf_type}")
                 elif not field["updateable"]:
@@ -202,13 +223,19 @@ class WriteBack:
         """The org's API name of a configured field, as describe returns it. Lookup ignores case."""
         return _field_map(self.sf, sobject)[name.lower()]["name"]
 
+    def _wire_value(self, sobject, field, value):
+        """The value as the org's field takes it: a text counter gets text ("2", "0.5"), other fields as they are."""
+        if field == config.SF_DELIVERED_FIELD and _field_map(self.sf, sobject)[field.lower()]["type"] == "string":
+            return f"{value:g}"
+        return value
+
     # ----- reads -----
 
     def _current(self, sobject, ids):
-        """Current Salesforce values of the given records: Id -> {configured field name: value}. The SOQL and
-        the results use the org's API names, so a difference in case from the configured name cannot make a
-        record look blank. The result is keyed by the configured names, as _changes expects."""
-        actual = {field: self._api(sobject, field) for field in REQUIRED[sobject]}
+        """Current Salesforce values of the given records: Id -> {configured field name: value}. The SOQL and the
+        results use the org's API names, so a difference in case from the configured name cannot make a record look
+        blank. The result is keyed by the configured names, as _changes expects."""
+        actual = {field: self._api(sobject, field) for field in self._required(sobject)}
         fields = ", ".join(actual.values())
         rows = {}
         for chunk in _chunks(ids, BATCH):
@@ -230,7 +257,7 @@ class WriteBack:
         done only when something else on the record changes. count_unchanged False: a record with no
         Odoo record yet is counted under "no Odoo record", not as unchanged. group: records with the same
         group are sent in the same Salesforce call (the lines of one opportunity). The PATCH body uses the
-        org's API names."""
+        org's API names and the org's value types."""
         self.labels[(sobject, sf_id)] = label
         changes = _changes(current, desired)
         if not changes:
@@ -245,7 +272,8 @@ class WriteBack:
         print(f"{prefix} {sobject} {sf_id}{name}: {detail}")
         self.counts[(sobject, "planned")] += 1
         payload = {"attributes": {"type": sobject}, "Id": sf_id,
-                   **{self._api(sobject, field): value for field, value in changes.items()}}
+                   **{self._api(sobject, field): self._wire_value(sobject, field, value)
+                      for field, value in changes.items()}}
         self.pending[sobject].append((sf_id if group is None else group, payload))
 
     def _flush(self, sobject):

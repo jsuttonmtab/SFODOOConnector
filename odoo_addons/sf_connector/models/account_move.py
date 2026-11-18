@@ -41,6 +41,17 @@ class AccountMove(models.Model):
         """A date as the invoice prints it, e.g. "1 May 2026" (day without a leading zero)."""
         return f"{value.day} {value:%B %Y}" if value else ''
 
+    def sf_po_number(self):
+        """The PO # printed on the invoice: the invoice reference if set, otherwise the customer's PO on the sale
+        order(s) the invoice lines come from (sale.order.client_order_ref), otherwise "N/A".
+        client_order_ref is a sale order field; it is not a field of the invoice."""
+        self.ensure_one()
+        if self.ref:
+            return self.ref
+        orders = self.invoice_line_ids.sale_line_ids.order_id
+        refs = [ref for ref in orders.mapped('client_order_ref') if ref]
+        return refs[0] if refs else 'N/A'
+
     def sf_early_payment_offers(self):
         """The early payment offers printed under the invoice total: [{date, percent, amount}]. Display only:
         no accounting entries are made. Days and percentages come from the company (Settings → Companies)."""

@@ -184,6 +184,15 @@ Views to check on the first upgrade: the order and quotation list ids and the se
 were written without a running Odoo 19 to check against. If an upgrade fails on one of them, fix that
 xpath or view id; the rest of the module does not depend on it.
 
+## Upgrade to sf_connector 19.0.1.8.1 (invoice PO number fix)
+
+1. Odoo: Apps → sf_connector → **Upgrade** (the invoice report template changed). No migration.
+2. `git pull --ff-only`, then `python3 -m connector.check_connections`.
+3. The connector's description lock is now a warning, not an error: a line with a changed description on an invoiced
+   line shows `WARNING description not updated (line is delivered or invoiced)` once per run.
+4. `SF_DELIVERED_FIELD` stays empty until the field is chosen (docs/field-mapping.md §5.1a). Do not set it on the
+   server without the decision: the counter would change about 3,900 lines in the sandbox.
+
 ## Upgrade to sf_connector 19.0.1.8.0 (information-only lines, description field, invoice layout)
 
 Order: upgrade the Odoo module first, then pull the code.

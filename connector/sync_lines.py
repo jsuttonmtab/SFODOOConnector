@@ -273,8 +273,10 @@ class LineSync:
         return vals
 
     def apply_locks(self, rec, vals, opp, sf_line):
-        """§4.4 locked-field rules. A locked field that would change is dropped and reported. The name and the
-        Salesforce description are locked once the line is delivered or invoiced."""
+        """§4.4 locked-field rules. A locked field that would change is dropped and reported. The name is locked once
+        the line is delivered or invoiced: an error on the opportunity. The Salesforce description is locked the same
+        way, but it is a warning: it is logged once per run, the rest of the line still syncs. With
+        SF_HOLD_NAME_UPDATES the description is held anyway, so no lock message is raised for it."""
         delivered = max(rec["qty_delivered"] or 0, rec["deliverable_delivered_count"] or 0)
         invoiced = rec["qty_invoiced"] or 0
 
@@ -293,8 +295,10 @@ class LineSync:
             reject("sf_billing_schedule", "line is invoiced")
         if (delivered or invoiced) and changes("name"):
             reject("name", "line is delivered or invoiced")
-        if (delivered or invoiced) and changes("sf_combined_description"):
-            reject("sf_combined_description", "line is delivered or invoiced")
+        if (delivered or invoiced) and changes("sf_combined_description") and not config.SF_HOLD_NAME_UPDATES:
+            vals.pop("sf_combined_description", None)
+            self.parent.warn("description not updated (line is delivered or invoiced)",
+                             f"line {sf_line['Id']} on {opp['Id']} {opp['Name']}")
 
     # ----- run -----
 

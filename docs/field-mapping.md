@@ -411,9 +411,10 @@ Salesforce unless `SF_WRITEBACK=true`. Field names are the org's spelling (`Odoo
 | Opportunity | `Odoo_Sync_Error__c` | This run's Sales-actionable messages for the opportunity: order not created, locked field or blocked removal (§4.4), line failures, and the stage-reversal message while the order's opportunity is out of Award Won (§4.6). Internal messages stay in the log. |
 | Opportunity | `Odoo_Last_Sync__c` | As for Account |
 | OpportunityLineItem | `Odoo_Line_ID__c` | `sale.order.line` id |
-| OpportunityLineItem | `Odoo_Qty_Delivered__c` | `qty_delivered`. For deliverable lines (`deliverable_count > 0`), `deliverable_delivered_count`. |
+| OpportunityLineItem | `Odoo_Qty_Delivered__c` | **Delivered** (the Delivery Tracker's delivered mark): `qty_delivered`. For deliverable lines (`deliverable_count > 0`), `deliverable_delivered_count`. |
 | OpportunityLineItem | `Odoo_Qty_Invoiced__c` | `qty_invoiced` |
-| OpportunityLineItem | `Odoo_Fulfilled__c` | Deliverable lines (professional services): every deliverable delivered. Other lines (subscriptions): fully invoiced (`qty_invoiced >= product_uom_qty`, quantity above 0). |
+| OpportunityLineItem | `Odoo_Fulfilled__c` | "Fulfilled" means **delivered**. Deliverable lines (professional services): every deliverable delivered (`deliverable_delivered_count >= deliverable_count`). Other lines (subscriptions): fully invoiced (`qty_invoiced >= product_uom_qty`, quantity above 0). Odoo's deliverable `is_fulfilled` flag is not used (the Delivery Tracker does not set it). |
+| OpportunityLineItem | the Salesforce delivered counter (`SF_DELIVERED_FIELD`) | Celigo's counter, labelled "Fulfilled" in the team's view: the units or waves delivered. Written with the same value as `Odoo_Qty_Delivered__c`, when `SF_DELIVERED_FIELD` names the field. Empty: not written. The API name is taken from describe. Subscriptions: the value is `qty_delivered`, the same as for `Odoo_Qty_Delivered__c` (see the open item on the field choice). |
 
 **Rules**
 
@@ -604,3 +605,17 @@ layouts (`INV001825.pdf`, mTab LLC; `INVG011392.pdf`, G.A.M.M.A).
   payment and wire instructions, legal paragraph (LLC), footer, and the two early-payment offers (days and percent).
 - Not verified against Odoo 19 yet: the paper format codes (`Letter`, `A4`), the page footer (`web.internal_layout`
   for the "x/y" page number), and the Print override (`action_invoice_print`).
+
+### 5.1a The delivered counter (decision pending, 2026-11-18)
+
+The team watches an existing Salesforce counter on OpportunityLineItem that Celigo used to update from NetSuite. The
+write-back did not touch it, only `Odoo_Qty_Delivered__c`. The counter is set by `SF_DELIVERED_FIELD` (empty by default,
+so nothing is written until the field is chosen). Two candidates in the org, and they disagree on most lines:
+
+- `Quantity_Fulfilled__c` (label "Quantity Fulfilled_DNU", text): 787 lines have a value, mostly whole numbers (1, 2, 3)
+  and some fractions (0.5, 12.5).
+- `Fulfillment_Quantity__c` (label "Fulfillment Quantity", number): 7,322 lines are above zero. On many fulfilled
+  subscriptions it equals Quantity (50 of 50, 100 of 100), which suggests Celigo's rule for subscriptions is
+  "quantity once fully delivered".
+
+Open: which field is the team's counter, and the subscription rule. Until decided, subscriptions write `qty_delivered`.

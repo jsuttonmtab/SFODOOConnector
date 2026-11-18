@@ -56,6 +56,10 @@ SF_EXPECTED_ORG_ID = os.environ.get("SF_EXPECTED_ORG_ID", "").strip()
 # Line name (description) changes from Salesforce. Default false: a changed description is written to Odoo and
 # listed in the line change note. True: the change is reported in the log and the dry run, and NOT written.
 SF_HOLD_NAME_UPDATES = os.environ.get("SF_HOLD_NAME_UPDATES", "false").strip().lower() in ("1", "true", "yes")
+# API name of the Salesforce OpportunityLineItem counter that holds the delivered count (Celigo's "Fulfilled").
+# Empty (default): not written. Set it only after the field is chosen (docs/field-mapping.md §5.1); it is then
+# written with the same value as Odoo_Qty_Delivered__c, and its API name is resolved from describe.
+SF_DELIVERED_FIELD = os.environ.get("SF_DELIVERED_FIELD", "").strip()
 # Invoice PDFs attached to the Salesforce opportunity (docs/field-mapping.md §5.2). Needs SF_WRITEBACK too.
 # Default false: nothing is attached. Credit notes follow SF_INVOICE_PDF_REFUNDS (default true).
 SF_INVOICE_PDF = os.environ.get("SF_INVOICE_PDF", "false").strip().lower() in ("1", "true", "yes")
