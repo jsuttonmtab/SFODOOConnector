@@ -73,5 +73,71 @@ class InvoiceTemplateTests(unittest.TestCase):
         self.assertNotRegex(self.text, r"(?i)resiz|max_width=|scale\(")
 
 
+def paperformat(xmlid):
+    """The fields of one report.paperformat record, by xmlid, as {field: value}."""
+    root = ET.parse(TEMPLATE).getroot()
+    for record in root.iter("record"):
+        if record.get("id") == xmlid:
+            return {f.get("name"): (f.get("eval") or f.text) for f in record.findall("field")}
+    raise AssertionError(f"no paperformat {xmlid}")
+
+
+class FooterAndLayoutTests(unittest.TestCase):
+    """Page footer for both company layouts: the company footer text and "Page x of y", at the bottom of every page."""
+
+    def setUp(self):
+        self.text = TEMPLATE.read_text(encoding="utf-8")
+        root = ET.parse(TEMPLATE).getroot()
+        self.layout = next(t for t in root.iter("template") if t.get("id") == "sf_invoice_layout")
+        self.document = next(t for t in root.iter("template") if t.get("id") == "report_sf_invoice_document")
+
+    def test_layout_footer_prints_the_company_footer_and_page_x_of_y(self):
+        footer = next(d for d in self.layout.iter("div") if d.get("class") == "footer")
+        footer_xml = ET.tostring(footer, encoding="unicode")
+        self.assertIn("o.company_id.sf_footer_html", footer_xml)
+        self.assertIn('class="page"', footer_xml)
+        self.assertIn('class="topage"', footer_xml)
+        self.assertIn("Page", footer_xml)
+
+    def test_layout_has_no_default_header_and_does_not_borrow_internal_layout(self):
+        self.assertNotIn("web.internal_layout", self.text)
+        header = next(d for d in self.layout.iter("div") if d.get("class") == "header")
+        self.assertEqual(len(list(header)), 0)
+        self.assertEqual((header.text or "").strip(), "")
+
+    def test_footer_is_used_for_both_company_layouts(self):
+        # The layout call is not inside a gamma/llc condition: one footer for both.
+        calls = [el for el in self.document.iter() if el.get("t-call") == "sf_connector.sf_invoice_layout"]
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(calls[0].get("t-if"))
+
+    def test_company_footer_is_not_printed_twice(self):
+        body = [el for el in self.document.iter() if el.get("t-field") == "c.sf_footer_html"]
+        self.assertEqual(body, [], "the company footer belongs in the page footer, not the body")
+
+    def test_top_and_bottom_margins_fit_the_footer(self):
+        letter, a4 = paperformat("paperformat_sf_letter"), paperformat("paperformat_sf_a4")
+        for name, fmt in (("letter", letter), ("a4", a4)):
+            self.assertEqual(float(fmt["margin_top"]), 12, name)
+            self.assertGreaterEqual(float(fmt["margin_bottom"]), 36, name)  # room for the footer lines and page line
+            self.assertIn("footer_spacing", fmt, name)
+
+    def test_long_lines_table_header_repeats_on_each_page(self):
+        self.assertIn("table-header-group", self.text)
+
+
+class NoWrapAndStyleTests(unittest.TestCase):
+    def setUp(self):
+        self.text = TEMPLATE.read_text(encoding="utf-8")
+
+    def test_due_date_and_early_payment_rows_do_not_wrap(self):
+        self.assertIn(".sf-inv .sf-nowrap { white-space: nowrap; }", self.text)
+        self.assertGreaterEqual(self.text.count('class="sf-nowrap"'), 3)  # due date cell and two offer rows (x2 cells)
+
+    def test_bill_to_address_is_not_italic(self):
+        self.assertIn(".sf-inv address { font-style: normal; margin: 0; }", self.text)
+        self.assertIn('style="font-style: normal;"', self.text)
+
+
 if __name__ == "__main__":
     unittest.main()

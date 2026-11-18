@@ -1,17 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- Paper: mTab LLC prints on US Letter, G.A.M.M.A on A4 (the NetSuite layouts). -->
+    <!-- Paper: mTab LLC prints on US Letter, G.A.M.M.A on A4 (the NetSuite layouts).
+         Top margin about 12 mm (no header). Bottom margin leaves room for the footer (contact columns, address line and
+         "Page x of y") so the footer never overlaps the line table. -->
     <record id="paperformat_sf_letter" model="report.paperformat">
         <field name="name">SF Invoice - US Letter</field>
         <field name="default" eval="False"/>
         <field name="format">Letter</field>
         <field name="orientation">Portrait</field>
-        <field name="margin_top">40</field>
-        <field name="margin_bottom">28</field>
+        <field name="margin_top">12</field>
+        <field name="margin_bottom">36</field>
         <field name="margin_left">14</field>
         <field name="margin_right">14</field>
         <field name="header_line" eval="False"/>
-        <field name="header_spacing">35</field>
+        <field name="header_spacing">0</field>
+        <field name="footer_spacing">4</field>
         <field name="dpi">90</field>
     </record>
     <record id="paperformat_sf_a4" model="report.paperformat">
@@ -19,12 +22,13 @@
         <field name="default" eval="False"/>
         <field name="format">A4</field>
         <field name="orientation">Portrait</field>
-        <field name="margin_top">40</field>
-        <field name="margin_bottom">28</field>
+        <field name="margin_top">12</field>
+        <field name="margin_bottom">36</field>
         <field name="margin_left">14</field>
         <field name="margin_right">14</field>
         <field name="header_line" eval="False"/>
-        <field name="header_spacing">35</field>
+        <field name="header_spacing">0</field>
+        <field name="footer_spacing">4</field>
         <field name="dpi">90</field>
     </record>
 
@@ -47,12 +51,14 @@
         <field name="paperformat_id" ref="paperformat_sf_a4"/>
     </record>
 
-    <!-- Own page layout: no date or company header (Odoo's standard one is not on the reference invoices). The page
-         number is the footer, bottom right. -->
+    <!-- Own page layout for both company layouts (llc and gamma). No date or company header, and not Odoo's standard page layout.
+         The footer is printed at the bottom of every page: the company's footer text (Settings → Companies, sf_footer_html)
+         and "Page x of y" (wkhtmltopdf page and topage spans). -->
     <template id="sf_invoice_layout">
         <div class="header"/>
-        <div class="footer" style="font-size: 8pt; color: #555;">
-            <div style="text-align: right;"><span class="page"/> / <span class="topage"/></div>
+        <div class="footer" style="font-size: 8pt; color: #222; width: 100%;">
+            <div t-field="o.company_id.sf_footer_html"/>
+            <div style="text-align: right; margin-top: 3px;">Page <span class="page"/> of <span class="topage"/></div>
         </div>
         <t t-out="0"/>
     </template>
@@ -72,10 +78,12 @@
         <t t-set="offers" t-value="o.sf_early_payment_offers()"/>
         <t t-call="sf_connector.sf_invoice_layout">
             <div class="sf-inv" style="font-size: 9.5pt; color: #222;">
-                <!-- No cell borders in this layout: the reference has none. -->
+                <!-- No cell borders, no italic address, and nothing wraps in the due date or the early payment box. -->
                 <style>
                     .sf-inv table, .sf-inv td, .sf-inv th { border: 0 !important; border-collapse: collapse; }
                     .sf-inv td, .sf-inv th { padding: 2px 4px; vertical-align: top; }
+                    .sf-inv address { font-style: normal; margin: 0; }
+                    .sf-inv .sf-nowrap { white-space: nowrap; }
                 </style>
 
                 <!-- Top rule -->
@@ -112,7 +120,7 @@
                     <tr>
                         <td rowspan="2" style="width: 34%;">
                             <div style="color: #1f5f99; font-weight: bold;">Bill To</div>
-                            <div t-field="o.partner_id" t-options='{"widget": "contact", "fields": ["name", "address"], "no_marker": true}'/>
+                            <div style="font-style: normal;" t-field="o.partner_id" t-options='{"widget": "contact", "fields": ["name", "address"], "no_marker": true}'/>
                         </td>
                         <td style="width: 22%;">
                             <div style="color: #1f5f99; font-weight: bold;">Date</div>
@@ -136,7 +144,7 @@
                             <div style="color: #1f5f99; font-weight: bold;">TERMS</div>
                             <div t-esc="o.invoice_payment_term_id.name or ''"/>
                         </td>
-                        <td style="padding-top: 8px; text-align: right;">
+                        <td style="padding-top: 8px; text-align: right;" class="sf-nowrap">
                             <span style="color: #1f5f99; font-weight: bold;">Due Date:</span>
                             <span t-esc="o.sf_format_date(o.invoice_date_due)"/>
                         </td>
@@ -146,7 +154,7 @@
 
                 <!-- Lines: product name, then the Salesforce description in italics in brackets -->
                 <table style="width: 100%; margin-top: 10px;">
-                    <thead>
+                    <thead style="display: table-header-group;">
                         <tr>
                             <th style="text-align: left; color: #1f5f99;">Item</th>
                             <t t-if="not gamma">
@@ -196,26 +204,26 @@
                     </tr>
                 </table>
 
-                <!-- Left: wire information (LLC). Right: early payment discount offers (display only). -->
+                <!-- Left: wire information (LLC). Right: early payment discount offers, wide enough that no row wraps. -->
                 <table style="width: 100%; margin-top: 16px;">
                     <tr>
-                        <td style="width: 50%; padding-right: 10px;">
+                        <td style="width: 40%; padding-right: 10px;">
                             <t t-if="not gamma and c.sf_payment_html">
                                 <div style="color: #1f5f99; font-weight: bold;">WIRE INFORMATION:</div>
                                 <div t-field="c.sf_payment_html"/>
                             </t>
                         </td>
-                        <td style="width: 50%;">
+                        <td style="width: 60%;">
                             <t t-if="offers">
                                 <div style="color: #1f5f99; font-weight: bold;">Early Payment Discount Offer:</div>
                                 <table style="width: 100%; border: 1px solid #4aa3e8 !important; margin-top: 4px;">
                                     <t t-foreach="offers" t-as="offer">
                                         <tr>
-                                            <td style="padding: 5px 8px; font-weight: bold;">
+                                            <td class="sf-nowrap" style="padding: 5px 8px; font-weight: bold;">
                                                 Balance due if paid by <span t-esc="o.sf_format_date(offer['date'])"/>
                                                 (-<span t-esc="'%g' % offer['percent']"/>%)
                                             </td>
-                                            <td style="padding: 5px 8px; text-align: right; font-weight: bold;">
+                                            <td class="sf-nowrap" style="padding: 5px 8px; text-align: right; font-weight: bold;">
                                                 <span t-esc="o.sf_money(offer['amount'])"/>
                                             </td>
                                         </tr>
@@ -236,9 +244,6 @@
                     <div style="color: #1f5f99; font-weight: bold;">Payment instructions</div>
                     <div t-field="c.sf_payment_html"/>
                 </div>
-
-                <!-- Footer text, from Settings → Companies (never hard-coded) -->
-                <div t-if="c.sf_footer_html" style="margin-top: 40px; text-align: center; font-size: 8.5pt;" t-field="c.sf_footer_html"/>
             </div>
         </t>
     </template>
