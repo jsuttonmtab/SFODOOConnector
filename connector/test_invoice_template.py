@@ -210,6 +210,23 @@ class CharsetFontAndLayoutRulesTests(unittest.TestCase):
         self.assertIn(".sf-inv tr { page-break-inside: avoid; }", self.text)
 
 
+class CombinedDescriptionTests(unittest.TestCase):
+    """The Salesforce description on an invoice line: trimmed, and no brackets when it is empty or only spaces."""
+
+    def setUp(self):
+        self.text = TEMPLATE.read_text(encoding="utf-8")
+
+    def test_description_is_trimmed_before_the_brackets(self):
+        self.assertIn("t-set=\"sf_desc\" t-value=\"(line.sf_combined_description or '').strip()\"", self.text)
+        self.assertIn('<t t-if="sf_desc"> <i>(<span t-esc="sf_desc"/>)</i></t>', self.text)
+
+    def test_brackets_are_printed_from_the_trimmed_value_only(self):
+        # The brackets and the value both come from sf_desc, so an empty or spaces-only description prints nothing.
+        self.assertEqual(self.text.count("sf_desc"), 3)
+        self.assertNotIn('t-if="line.sf_combined_description"', self.text)
+        self.assertNotIn('t-esc="line.sf_combined_description"', self.text)
+
+
 class WebsiteHelperTests(unittest.TestCase):
     def test_helper_is_defined_on_the_invoice_model(self):
         defined = set(re.findall(r"def (sf_[a-z_]+)\(", MODEL.read_text(encoding="utf-8")))
