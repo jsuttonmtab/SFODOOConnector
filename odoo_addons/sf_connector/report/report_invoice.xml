@@ -51,10 +51,15 @@
 
     <!-- Own page layout for both company layouts (llc and gamma). No date or company header, and not Odoo's standard page
          layout. The footer is printed at the bottom of every page: the company's footer text (Settings → Companies,
-         sf_footer_html) and "Page x of y" (wkhtmltopdf page and topage spans). Body size matches NetSuite (8 pt). -->
+         sf_footer_html) and "Page x of y" (wkhtmltopdf page and topage spans). Footer size matches NetSuite (8 pt rendered);
+         the footer table has no grid lines. -->
     <template id="sf_invoice_layout">
         <div class="header"/>
-        <div class="footer" style="font-size: 9.2pt; color: #222; width: 100%;">
+        <div class="footer sf-footer" style="font-size: 9.5pt; color: #222; width: 100%;">
+            <style>
+                .sf-footer table, .sf-footer td, .sf-footer th { border: 0 !important; border-collapse: collapse; }
+                .sf-footer td, .sf-footer th { padding: 0 4px; font-size: 9.5pt; }
+            </style>
             <div t-field="o.company_id.sf_footer_html"/>
             <div style="text-align: right; margin-top: 3px;">Page <span class="page"/> of <span class="topage"/></div>
         </div>
@@ -75,19 +80,21 @@
         <t t-set="lines" t-value="o.invoice_line_ids.filtered(lambda l: l.display_type == 'product' and not l.sf_information_only)"/>
         <t t-set="offers" t-value="o.sf_early_payment_offers()"/>
         <t t-call="sf_connector.sf_invoice_layout">
-            <div class="sf-inv" style="font-size: 9.2pt; color: #222;">
-                <!-- Sizes: NetSuite body, labels, table, totals and footer are 8 pt (rendered); the title is 12.8 pt and the
-                     total 19.2 pt. wkhtmltopdf renders CSS points at about 0.85 to 0.87 of their value, so body and footer
-                     are set to 9.2 pt and the total to 22.5 pt. No cell borders, no italic address, and nothing wraps in
-                     the due date or the early payment box. -->
+            <div class="sf-inv" style="font-size: 9.5pt; color: #222;">
+                <!-- Sizes, measured on the NetSuite reference (8 pt body, labels, table, totals and footer; 12.8 pt title;
+                     19.2 pt total). wkhtmltopdf renders CSS points at about 0.84 to 0.85 of their value. So body text is
+                     9.5 pt CSS (about 8 pt rendered), the title stays at 15 pt (12.8 pt) and the total is 22.7 pt CSS
+                     (about 19.2 pt). The amount span carries its own size. No cell borders, no italic address, and nothing
+                     wraps in the due date or the early payment box. -->
                 <style>
                     .sf-inv table, .sf-inv td, .sf-inv th { border: 0 !important; border-collapse: collapse; }
-                    .sf-inv td, .sf-inv th, .sf-inv div, .sf-inv span, .sf-inv address { font-size: 9.2pt; }
+                    .sf-inv td, .sf-inv th, .sf-inv div, .sf-inv span, .sf-inv address { font-size: 9.5pt; }
                     .sf-inv td, .sf-inv th { padding: 2px 4px; vertical-align: top; }
                     .sf-inv address { font-style: normal; margin: 0; }
                     .sf-inv .sf-nowrap { white-space: nowrap; }
                     .sf-inv .sf-title { font-size: 15pt; }
-                    .sf-inv .sf-total { font-size: 22.5pt; }
+                    .sf-inv .sf-total { font-size: 22.7pt; }
+                    .sf-inv .sf-total span { font-size: 22.7pt; }
                 </style>
 
                 <!-- Top rule -->

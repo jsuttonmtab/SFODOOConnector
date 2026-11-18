@@ -92,7 +92,7 @@ class FooterAndLayoutTests(unittest.TestCase):
         self.document = next(t for t in root.iter("template") if t.get("id") == "report_sf_invoice_document")
 
     def test_layout_footer_prints_the_company_footer_and_page_x_of_y(self):
-        footer = next(d for d in self.layout.iter("div") if d.get("class") == "footer")
+        footer = next(d for d in self.layout.iter("div") if "footer" in (d.get("class") or "").split())
         footer_xml = ET.tostring(footer, encoding="unicode")
         self.assertIn("o.company_id.sf_footer_html", footer_xml)
         self.assertIn('class="page"', footer_xml)
@@ -154,22 +154,25 @@ class NoWrapAndStyleTests(unittest.TestCase):
 
 class FontSizeAndWebsiteTests(unittest.TestCase):
     """Sizes measured on the NetSuite reference: body, labels, table, totals and footer 8 pt rendered; title 12.8 pt;
-    total 19.2 pt. The template sets 9.2 pt body and footer, 22.5 pt total, 15 pt title (wkhtmltopdf renders at about
-    0.85 to 0.87 of the CSS value)."""
+    total 19.2 pt. The template sets 9.5 pt CSS body and footer (about 8 pt rendered), 15 pt title (12.8 pt) and 22.7 pt
+    total (about 19.2 pt). wkhtmltopdf renders at about 0.84 to 0.85 of the CSS value."""
 
     def setUp(self):
         self.text = TEMPLATE.read_text(encoding="utf-8")
 
-    def test_body_and_footer_are_9_2_pt(self):
-        self.assertIn(".sf-inv td, .sf-inv th, .sf-inv div, .sf-inv span, .sf-inv address { font-size: 9.2pt; }", self.text)
-        self.assertIn('<div class="sf-inv" style="font-size: 9.2pt;', self.text)
-        self.assertIn('<div class="footer" style="font-size: 9.2pt;', self.text)
+    def test_body_is_9_5_pt(self):
+        self.assertIn(".sf-inv td, .sf-inv th, .sf-inv div, .sf-inv span, .sf-inv address { font-size: 9.5pt; }", self.text)
+        self.assertIn('<div class="sf-inv" style="font-size: 9.5pt;', self.text)
+
+    def test_footer_is_9_5_pt_and_has_no_grid_lines(self):
+        self.assertIn('<div class="footer sf-footer" style="font-size: 9.5pt;', self.text)
+        self.assertIn(".sf-footer table, .sf-footer td, .sf-footer th { border: 0 !important;", self.text)
 
     def test_title_and_total_sizes(self):
         self.assertIn(".sf-inv .sf-title { font-size: 15pt; }", self.text)
-        self.assertIn(".sf-inv .sf-total { font-size: 22.5pt; }", self.text)
-        self.assertIn('<div class="sf-title">Invoice', self.text)
-        self.assertIn('<div class="sf-total">', self.text)
+        self.assertIn(".sf-inv .sf-total { font-size: 22.7pt; }", self.text)
+        self.assertIn(".sf-inv .sf-total span { font-size: 22.7pt; }", self.text)  # the amount span must carry the size
+        self.assertIn('<div class="sf-total"><span', self.text)
 
     def test_website_is_printed_without_the_scheme(self):
         self.assertIn("o.sf_company_website()", self.text)
