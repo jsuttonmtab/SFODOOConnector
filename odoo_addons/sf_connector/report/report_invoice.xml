@@ -6,7 +6,7 @@
         <field name="default" eval="False"/>
         <field name="format">Letter</field>
         <field name="orientation">Portrait</field>
-        <field name="margin_top">45</field>
+        <field name="margin_top">40</field>
         <field name="margin_bottom">28</field>
         <field name="margin_left">14</field>
         <field name="margin_right">14</field>
@@ -19,7 +19,7 @@
         <field name="default" eval="False"/>
         <field name="format">A4</field>
         <field name="orientation">Portrait</field>
-        <field name="margin_top">45</field>
+        <field name="margin_top">40</field>
         <field name="margin_bottom">28</field>
         <field name="margin_left">14</field>
         <field name="margin_right">14</field>
@@ -60,19 +60,24 @@
         <t t-set="gamma" t-value="c.sf_invoice_layout == 'gamma'"/>
         <t t-set="lines" t-value="o.invoice_line_ids.filtered(lambda l: l.display_type == 'product' and not l.sf_information_only)"/>
         <t t-set="offers" t-value="o.sf_early_payment_offers()"/>
+        <t t-set="blue" t-value="'#1f5f99'"/>
+        <t t-set="rule" t-value="'#4aa3e8'"/>
         <t t-call="web.internal_layout">
-            <div class="page" style="font-size: 10pt;">
-                <!-- Header: logo left; title and company block right -->
+            <div class="page" style="font-size: 9.5pt; color: #222;">
+                <!-- Top rule -->
+                <div style="height: 4px; background: #4aa3e8; margin-bottom: 14px;"/>
+
+                <!-- Header: logo left; title (and trading name) under it; company block right -->
                 <table style="width: 100%;">
                     <tr>
-                        <td style="width: 45%; vertical-align: top;">
-                            <img t-if="c.logo" t-att-src="image_data_uri(c.logo)" style="max-height: 70px;" alt="Logo"/>
+                        <td style="width: 28%; vertical-align: top;">
+                            <img t-if="c.logo" t-att-src="image_data_uri(c.logo)" style="max-height: 80px;" alt="Logo"/>
                         </td>
-                        <td style="width: 55%; vertical-align: top; text-align: right;">
-                            <h2 style="margin: 0;">Invoice <span t-field="o.name"/></h2>
-                            <div t-if="gamma and c.sf_trading_name" style="font-style: italic;">
-                                <span t-esc="c.sf_trading_name"/>
-                            </div>
+                        <td style="width: 36%; vertical-align: top;">
+                            <div style="font-size: 15pt;">Invoice <strong t-esc="o.name"/></div>
+                            <div t-if="gamma and c.sf_trading_name" style="margin-top: 22px;" t-esc="c.sf_trading_name"/>
+                        </td>
+                        <td style="width: 36%; vertical-align: top;">
                             <t t-if="not gamma">
                                 <div><strong t-esc="c.name"/></div>
                                 <div t-if="c.street" t-esc="c.street"/>
@@ -89,62 +94,73 @@
                     </tr>
                 </table>
 
-                <!-- Info row: bill to, date, PO, tax registration, terms; total on the right -->
-                <table style="width: 100%; margin-top: 16px;">
+                <!-- Info row: Bill To, Date, PO #, TOTAL; second row: Tax Reg. Number, TERMS, Due Date -->
+                <table style="width: 100%; margin-top: 26px;">
                     <tr>
-                        <td style="width: 60%; vertical-align: top;">
-                            <div><strong>Bill To</strong></div>
+                        <td rowspan="2" style="width: 34%; vertical-align: top;">
+                            <div style="color: #1f5f99; font-weight: bold;">Bill To</div>
                             <div t-field="o.partner_id" t-options='{"widget": "contact", "fields": ["name", "address"], "no_marker": true}'/>
-                            <div style="margin-top: 8px;">
-                                <div><strong>Date:</strong> <span t-field="o.invoice_date"/></div>
-                                <div><strong>PO #:</strong> <span t-esc="o.client_order_ref or 'N/A'"/></div>
-                                <div><strong>Tax Reg. Number:</strong> <span t-esc="o.partner_id.vat or ''"/></div>
-                                <div><strong>TERMS:</strong> <span t-esc="o.invoice_payment_term_id.name or ''"/></div>
-                            </div>
                         </td>
-                        <td style="width: 40%; vertical-align: top; text-align: right;">
-                            <div>TOTAL</div>
-                            <div style="font-size: 22pt; font-weight: bold;">
-                                <span t-field="o.amount_total"/>
-                            </div>
-                            <div style="margin-top: 4px;">Due Date: <span t-field="o.invoice_date_due"/></div>
+                        <td style="width: 22%; vertical-align: top;">
+                            <div style="color: #1f5f99; font-weight: bold;">Date</div>
+                            <div t-esc="o.sf_format_date(o.invoice_date)"/>
+                        </td>
+                        <td style="width: 20%; vertical-align: top;">
+                            <div style="color: #1f5f99; font-weight: bold;">PO #</div>
+                            <div t-esc="o.client_order_ref or 'N/A'"/>
+                        </td>
+                        <td style="width: 24%; vertical-align: top; text-align: right;">
+                            <div style="color: #1f5f99; font-weight: bold;">TOTAL</div>
+                            <div style="font-size: 22pt;"><span t-field="o.amount_total"/></div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="vertical-align: top; padding-top: 8px;">
+                            <div style="color: #1f5f99; font-weight: bold;">Tax Reg. Number</div>
+                            <div t-esc="o.partner_id.vat or ''"/>
+                        </td>
+                        <td style="vertical-align: top; padding-top: 8px;">
+                            <div style="color: #1f5f99; font-weight: bold;">TERMS</div>
+                            <div t-esc="o.invoice_payment_term_id.name or ''"/>
+                        </td>
+                        <td style="vertical-align: top; text-align: right; padding-top: 8px;">
+                            <span style="color: #1f5f99; font-weight: bold;">Due Date:</span>
+                            <span t-esc="o.sf_format_date(o.invoice_date_due)"/>
                         </td>
                     </tr>
                 </table>
+                <div style="border-bottom: 2px solid #4aa3e8; margin-top: 12px;"/>
 
-                <!-- Lines: product name, then the Salesforce description in italics -->
-                <table class="table table-sm" style="width: 100%; margin-top: 18px; border-collapse: collapse;">
+                <!-- Lines: product name, then the Salesforce description in italics in brackets -->
+                <table style="width: 100%; margin-top: 10px; border-collapse: collapse;">
                     <thead>
-                        <tr style="border-bottom: 1px solid #000;">
-                            <th style="text-align: left;">Item</th>
+                        <tr>
+                            <th style="text-align: left; color: #1f5f99; padding: 6px 4px;">Item</th>
                             <t t-if="not gamma">
-                                <th style="text-align: right;">Total cost</th>
-                                <th style="text-align: right;">Amount invoiced</th>
+                                <th style="text-align: right; color: #1f5f99; padding: 6px 4px; width: 17%;">Total cost</th>
+                                <th style="text-align: right; color: #1f5f99; padding: 6px 4px; width: 19%;">Amount invoiced</th>
                             </t>
                             <t t-if="gamma">
-                                <th style="text-align: right;">Amount</th>
+                                <th style="text-align: right; color: #1f5f99; padding: 6px 4px; width: 19%;">Amount</th>
                             </t>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr t-foreach="lines" t-as="line">
-                            <td>
-                                <span t-field="line.name"/>
-                                <t t-if="line.sf_combined_description">
-                                    (<i t-esc="line.sf_combined_description"/>)
-                                </t>
+                        <tr t-foreach="lines" t-as="line" style="border-top: 1px solid #e3e8ee;">
+                            <td style="padding: 8px 4px; vertical-align: top;">
+                                <span t-field="line.name"/><t t-if="line.sf_combined_description"> <i>(<span t-esc="line.sf_combined_description"/>)</i></t>
                             </td>
                             <t t-if="not gamma">
-                                <td style="text-align: right;">
+                                <td style="text-align: right; padding: 8px 4px; vertical-align: top;">
                                     <span t-esc="line.sale_line_ids[:1].price_subtotal if line.sale_line_ids else line.price_subtotal"
                                           t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
                                 </td>
-                                <td style="text-align: right;">
+                                <td style="text-align: right; padding: 8px 4px; vertical-align: top;">
                                     <span t-field="line.price_subtotal"/>
                                 </td>
                             </t>
                             <t t-if="gamma">
-                                <td style="text-align: right;">
+                                <td style="text-align: right; padding: 8px 4px; vertical-align: top;">
                                     <span t-field="line.price_subtotal"/>
                                 </td>
                             </t>
@@ -152,38 +168,65 @@
                     </tbody>
                 </table>
 
-                <!-- Totals -->
-                <table style="width: 40%; margin-left: auto; margin-top: 10px;">
+                <!-- Totals, right aligned -->
+                <table style="width: 46%; margin-left: auto; margin-top: 8px; border-collapse: collapse;">
                     <tr>
-                        <td>Subtotal</td>
-                        <td style="text-align: right;"><span t-field="o.amount_untaxed"/></td>
+                        <td style="text-align: right; padding: 3px 6px;">Subtotal</td>
+                        <td style="text-align: right; padding: 3px 4px; width: 42%;"><span t-field="o.amount_untaxed"/></td>
                     </tr>
                     <tr>
-                        <td>Tax<t t-if="gamma"> (<span t-esc="'%g' % round(100.0 * o.amount_tax / o.amount_untaxed, 2) if o.amount_untaxed else 0"/>%)</t></td>
-                        <td style="text-align: right;"><span t-field="o.amount_tax"/></td>
+                        <td style="text-align: right; padding: 3px 6px;">Tax<t t-if="gamma"> (<span t-esc="'%g' % round(100.0 * o.amount_tax / o.amount_untaxed, 2) if o.amount_untaxed else 0"/>%)</t></td>
+                        <td style="text-align: right; padding: 3px 4px;"><span t-field="o.amount_tax"/></td>
                     </tr>
-                    <tr style="border-top: 1px solid #000; font-weight: bold;">
-                        <td>Total</td>
-                        <td style="text-align: right;"><span t-field="o.amount_total"/></td>
+                    <tr style="border-top: 1px solid #e3e8ee;">
+                        <td style="text-align: right; padding: 5px 6px; color: #1f5f99; font-weight: bold;">Total</td>
+                        <td style="text-align: right; padding: 5px 4px;"><span t-field="o.amount_total"/></td>
                     </tr>
                 </table>
 
-                <!-- Early payment discount offers (display only) -->
-                <div t-if="offers" style="border: 1px solid #000; padding: 8px; margin-top: 14px;">
-                    <t t-foreach="offers" t-as="offer">
-                        <div>
-                            Balance due if paid by <span t-esc="offer['date']" t-options='{"widget": "date"}'/>
-                            (-<span t-esc="'%g' % offer['percent']"/>%):
-                            <span t-esc="offer['amount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
-                        </div>
-                    </t>
+                <!-- Left: wire information (LLC). Right: early payment discount offers (display only). -->
+                <table style="width: 100%; margin-top: 16px;">
+                    <tr>
+                        <td style="width: 50%; vertical-align: top; padding-right: 10px;">
+                            <t t-if="not gamma and c.sf_payment_html">
+                                <div style="color: #1f5f99; font-weight: bold;">WIRE INFORMATION:</div>
+                                <div t-field="c.sf_payment_html"/>
+                            </t>
+                        </td>
+                        <td style="width: 50%; vertical-align: top;">
+                            <t t-if="offers">
+                                <div style="color: #1f5f99; font-weight: bold;">Early Payment Discount Offer:</div>
+                                <table style="width: 100%; border: 1px solid #4aa3e8; border-collapse: collapse; margin-top: 4px;">
+                                    <t t-foreach="offers" t-as="offer">
+                                        <tr>
+                                            <td style="padding: 5px 8px; font-weight: bold;">
+                                                Balance due if paid by <span t-esc="o.sf_format_date(offer['date'])"/>
+                                                (-<span t-esc="'%g' % offer['percent']"/>%)
+                                            </td>
+                                            <td style="padding: 5px 8px; text-align: right; font-weight: bold;">
+                                                <span t-esc="offer['amount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                                            </td>
+                                        </tr>
+                                    </t>
+                                </table>
+                            </t>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- LLC: legal payment paragraph, then Notes. G.A.M.M.A: Notes, then Payment instructions. -->
+                <div t-if="not gamma and c.sf_legal_html" style="margin-top: 12px;" t-field="c.sf_legal_html"/>
+                <div t-if="c.sf_notes_html" style="margin-top: 12px;">
+                    <div style="color: #1f5f99; font-weight: bold;">Notes</div>
+                    <div t-field="c.sf_notes_html"/>
+                </div>
+                <div t-if="gamma and c.sf_payment_html" style="margin-top: 12px;">
+                    <div style="color: #1f5f99; font-weight: bold;">Payment instructions</div>
+                    <div t-field="c.sf_payment_html"/>
                 </div>
 
-                <!-- Per-company text: entered in Settings → Companies, never hard-coded -->
-                <div t-if="c.sf_notes_html" style="margin-top: 12px;" t-field="c.sf_notes_html"/>
-                <div t-if="c.sf_payment_html" style="margin-top: 8px;" t-field="c.sf_payment_html"/>
-                <div t-if="not gamma and c.sf_legal_html" style="margin-top: 8px;" t-field="c.sf_legal_html"/>
-                <div t-if="c.sf_footer_html" style="margin-top: 14px; font-size: 8pt;" t-field="c.sf_footer_html"/>
+                <!-- Footer text, from Settings → Companies (never hard-coded) -->
+                <div t-if="c.sf_footer_html" style="margin-top: 40px; text-align: center; font-size: 8.5pt;" t-field="c.sf_footer_html"/>
             </div>
         </t>
     </template>

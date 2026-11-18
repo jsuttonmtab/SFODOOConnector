@@ -37,6 +37,10 @@ class AccountMove(models.Model):
         super().action_invoice_print()
         return self[:1]._sf_invoice_report().report_action(self)
 
+    def sf_format_date(self, value):
+        """A date as the invoice prints it, e.g. "1 May 2026" (day without a leading zero)."""
+        return f"{value.day} {value:%B %Y}" if value else ''
+
     def sf_early_payment_offers(self):
         """The early payment offers printed under the invoice total: [{date, percent, amount}]. Display only:
         no accounting entries are made. Days and percentages come from the company (Settings → Companies)."""
