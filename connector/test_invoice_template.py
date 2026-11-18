@@ -120,10 +120,23 @@ class FooterAndLayoutTests(unittest.TestCase):
         for name, fmt in (("letter", letter), ("a4", a4)):
             self.assertEqual(float(fmt["margin_top"]), 12, name)
             self.assertGreaterEqual(float(fmt["margin_bottom"]), 36, name)  # room for the footer lines and page line
-            self.assertIn("footer_spacing", fmt, name)
+            self.assertNotIn("footer_spacing", fmt, name)  # not a field in Odoo 19: the record would not load
 
     def test_long_lines_table_header_repeats_on_each_page(self):
         self.assertIn("table-header-group", self.text)
+
+
+class PaperFormatFieldTests(unittest.TestCase):
+    """Every field the paper formats set must exist on report.paperformat (the list is saved from the sandbox)."""
+
+    def test_paper_format_fields_exist_in_odoo(self):
+        known = set(FIELDS["report.paperformat"])
+        root = ET.parse(TEMPLATE).getroot()
+        for record in root.iter("record"):
+            if record.get("model") != "report.paperformat":
+                continue
+            used = {f.get("name") for f in record.findall("field")}
+            self.assertEqual(used - known, set(), f"{record.get('id')} sets fields Odoo does not have")
 
 
 class NoWrapAndStyleTests(unittest.TestCase):
