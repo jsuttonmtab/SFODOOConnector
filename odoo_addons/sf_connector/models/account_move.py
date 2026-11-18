@@ -69,6 +69,17 @@ class AccountMove(models.Model):
         refs = [ref for ref in orders.mapped('client_order_ref') if ref]
         return refs[0] if refs else 'N/A'
 
+    def sf_company_website(self):
+        """The company website as the invoice prints it: without "http://" or "https://" and without a trailing
+        slash, e.g. "www.mtab.com" (NetSuite prints it this way)."""
+        self.ensure_one()
+        website = (self.company_id.website or '').strip()
+        for scheme in ('https://', 'http://'):
+            if website.lower().startswith(scheme):
+                website = website[len(scheme):]
+                break
+        return website.rstrip('/')
+
     def sf_company_city_line(self):
         """The company's place line as the reference prints it: "Yorba Linda, CA 92887 US"."""
         self.ensure_one()

@@ -49,12 +49,12 @@
         <field name="paperformat_id" ref="paperformat_sf_a4"/>
     </record>
 
-    <!-- Own page layout for both company layouts (llc and gamma). No date or company header, and not Odoo's standard page layout.
-         The footer is printed at the bottom of every page: the company's footer text (Settings → Companies, sf_footer_html)
-         and "Page x of y" (wkhtmltopdf page and topage spans). -->
+    <!-- Own page layout for both company layouts (llc and gamma). No date or company header, and not Odoo's standard page
+         layout. The footer is printed at the bottom of every page: the company's footer text (Settings → Companies,
+         sf_footer_html) and "Page x of y" (wkhtmltopdf page and topage spans). Body size matches NetSuite (8 pt). -->
     <template id="sf_invoice_layout">
         <div class="header"/>
-        <div class="footer" style="font-size: 8pt; color: #222; width: 100%;">
+        <div class="footer" style="font-size: 9.2pt; color: #222; width: 100%;">
             <div t-field="o.company_id.sf_footer_html"/>
             <div style="text-align: right; margin-top: 3px;">Page <span class="page"/> of <span class="topage"/></div>
         </div>
@@ -75,13 +75,19 @@
         <t t-set="lines" t-value="o.invoice_line_ids.filtered(lambda l: l.display_type == 'product' and not l.sf_information_only)"/>
         <t t-set="offers" t-value="o.sf_early_payment_offers()"/>
         <t t-call="sf_connector.sf_invoice_layout">
-            <div class="sf-inv" style="font-size: 9.5pt; color: #222;">
-                <!-- No cell borders, no italic address, and nothing wraps in the due date or the early payment box. -->
+            <div class="sf-inv" style="font-size: 9.2pt; color: #222;">
+                <!-- Sizes: NetSuite body, labels, table, totals and footer are 8 pt (rendered); the title is 12.8 pt and the
+                     total 19.2 pt. wkhtmltopdf renders CSS points at about 0.85 to 0.87 of their value, so body and footer
+                     are set to 9.2 pt and the total to 22.5 pt. No cell borders, no italic address, and nothing wraps in
+                     the due date or the early payment box. -->
                 <style>
                     .sf-inv table, .sf-inv td, .sf-inv th { border: 0 !important; border-collapse: collapse; }
+                    .sf-inv td, .sf-inv th, .sf-inv div, .sf-inv span, .sf-inv address { font-size: 9.2pt; }
                     .sf-inv td, .sf-inv th { padding: 2px 4px; vertical-align: top; }
                     .sf-inv address { font-style: normal; margin: 0; }
                     .sf-inv .sf-nowrap { white-space: nowrap; }
+                    .sf-inv .sf-title { font-size: 15pt; }
+                    .sf-inv .sf-total { font-size: 22.5pt; }
                 </style>
 
                 <!-- Top rule -->
@@ -94,7 +100,7 @@
                             <img t-if="c.logo" t-att-src="image_data_uri(c.logo)" style="max-height: 80px;" alt="Logo"/>
                         </td>
                         <td style="width: 36%;">
-                            <div style="font-size: 15pt;">Invoice <strong t-esc="o.name"/></div>
+                            <div class="sf-title">Invoice <strong t-esc="o.name"/></div>
                             <div t-if="gamma and c.sf_trading_name" style="margin-top: 22px;" t-esc="c.sf_trading_name"/>
                         </td>
                         <td style="width: 36%;">
@@ -103,7 +109,7 @@
                                 <div t-if="c.street" t-esc="c.street"/>
                                 <div t-if="c.street2" t-esc="c.street2"/>
                                 <div t-esc="o.sf_company_city_line()"/>
-                                <div t-if="c.website" t-esc="c.website"/>
+                                <div t-if="o.sf_company_website()" t-esc="o.sf_company_website()"/>
                                 <div t-if="c.sf_tax_id">Tax ID: <span t-esc="c.sf_tax_id"/></div>
                             </t>
                             <t t-if="gamma">
@@ -130,7 +136,7 @@
                         </td>
                         <td style="width: 24%; text-align: right;">
                             <div style="color: #1f5f99; font-weight: bold;">TOTAL</div>
-                            <div style="font-size: 22pt;"><span t-esc="o.sf_money(o.amount_total)"/></div>
+                            <div class="sf-total"><span t-esc="o.sf_money(o.amount_total)"/></div>
                         </td>
                     </tr>
                     <tr>

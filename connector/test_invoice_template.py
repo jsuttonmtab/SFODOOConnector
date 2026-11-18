@@ -152,5 +152,35 @@ class NoWrapAndStyleTests(unittest.TestCase):
         self.assertIn('style="font-style: normal;"', self.text)
 
 
+class FontSizeAndWebsiteTests(unittest.TestCase):
+    """Sizes measured on the NetSuite reference: body, labels, table, totals and footer 8 pt rendered; title 12.8 pt;
+    total 19.2 pt. The template sets 9.2 pt body and footer, 22.5 pt total, 15 pt title (wkhtmltopdf renders at about
+    0.85 to 0.87 of the CSS value)."""
+
+    def setUp(self):
+        self.text = TEMPLATE.read_text(encoding="utf-8")
+
+    def test_body_and_footer_are_9_2_pt(self):
+        self.assertIn(".sf-inv td, .sf-inv th, .sf-inv div, .sf-inv span, .sf-inv address { font-size: 9.2pt; }", self.text)
+        self.assertIn('<div class="sf-inv" style="font-size: 9.2pt;', self.text)
+        self.assertIn('<div class="footer" style="font-size: 9.2pt;', self.text)
+
+    def test_title_and_total_sizes(self):
+        self.assertIn(".sf-inv .sf-title { font-size: 15pt; }", self.text)
+        self.assertIn(".sf-inv .sf-total { font-size: 22.5pt; }", self.text)
+        self.assertIn('<div class="sf-title">Invoice', self.text)
+        self.assertIn('<div class="sf-total">', self.text)
+
+    def test_website_is_printed_without_the_scheme(self):
+        self.assertIn("o.sf_company_website()", self.text)
+        self.assertNotIn('t-esc="c.website"', self.text)  # the raw field (with http://) is never printed
+
+
+class WebsiteHelperTests(unittest.TestCase):
+    def test_helper_is_defined_on_the_invoice_model(self):
+        defined = set(re.findall(r"def (sf_[a-z_]+)\(", MODEL.read_text(encoding="utf-8")))
+        self.assertIn("sf_company_website", defined)
+
+
 if __name__ == "__main__":
     unittest.main()
