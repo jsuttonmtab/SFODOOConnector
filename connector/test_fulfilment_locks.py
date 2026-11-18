@@ -67,7 +67,8 @@ class CounterWriteTests(unittest.TestCase):
         self.assertEqual(wb.pending["OpportunityLineItem"][0][1][COUNTER], "0.5")
 
     def test_counter_already_equal_is_not_planned_whether_text_or_number(self):
-        for counter_type, stored, expected in (("double", 1.0, 0), ("string", "1", 0), ("string", "2", 1)):
+        # stored 2 with the Odoo value 1: lower, so kept (never lowered), not a change
+        for counter_type, stored, expected in (("double", 1.0, 0), ("string", "1", 0), ("string", "2", 0)):
             sf = org_with_counter(counter_type)
             # the row already holds every value this line would be sent, so only the counter can differ
             sf.rows[LINE_ID].update({"Odoo_Qty_Delivered__c": 1.0, "Odoo_Qty_Invoiced__c": 4.0, COUNTER: stored})
@@ -173,6 +174,87 @@ class DescriptionLockTests(unittest.TestCase):
         with mock.patch.object(config, "SF_HOLD_NAME_UPDATES", False):
             sync.apply_locks(self.rec(), vals, self.opp(), self.line())
         self.assertEqual(self.warnings, [])
+
+
+class NeverLowerTests(unittest.TestCase):
+    """The delivered counter is written only when the Odoo value is greater than Salesforce's. A lower Odoo value is
+    kept, logged as a warning, and counted in the summary. Historical NetSuite values survive."""
+
+    def plan(self, sf_value, odoo_value_rec, counter_type="double"):
+        sf = org_with_counter(counter_type)
+        sf.rows[LINE_ID].update({"Odoo_Qty_Delivered__c": 0.0, "Odoo_Qty_Invoiced__c": 0.0, COUNTER: sf_value})
+        with mock.patch.object(config, "SF_DELIVERED_FIELD", COUNTER):
+            wb = WriteBack(sf, None, dry_run=True)
+            wb._fields_ok("OpportunityLineItem")
+            current = wb._current("OpportunityLineItem", [LINE_ID])
+            out = io.StringIO()
+            with redirect_stdout(out):
+                wb._plan("OpportunityLineItem", LINE_ID, "", current[LINE_ID], _line_values(odoo_value_rec),
+                         group="006A")
+        return wb, out.getvalue()
+
+    def test_higher_odoo_value_is_written(self):
+        wb, _ = self.plan(sf_value=1.0, odoo_value_rec=deliverable_rec(deliverable_delivered_count=3))
+        self.assertIn(COUNTER, wb.pending["OpportunityLineItem"][0][1])
+        self.assertEqual(wb.pending["OpportunityLineItem"][0][1][COUNTER], 3)
+
+    def test_lower_odoo_value_is_not_written_and_is_warned(self):
+        wb, out = self.plan(sf_value=5.0, odoo_value_rec=deliverable_rec(deliverable_delivered_count=2))
+        self.assertEqual(wb.counts[("OpportunityLineItem", "counter kept")], 1)
+        self.assertIn("WARNING OpportunityLineItem", out)
+        self.assertIn("lower than Salesforce 5", out)
+        # the rest of the line is still written (the Odoo qty field differs from 0)
+        payload = wb.pending["OpportunityLineItem"][0][1]
+        self.assertNotIn(COUNTER, payload)
+        self.assertIn("Odoo_Qty_Delivered__c", payload)
+
+    def test_equal_value_is_neither_written_nor_warned(self):
+        wb, out = self.plan(sf_value=2.0, odoo_value_rec=deliverable_rec(deliverable_delivered_count=2))
+        self.assertEqual(wb.counts[("OpportunityLineItem", "counter kept")], 0)
+        self.assertNotIn("WARNING", out)
+        self.assertNotIn(COUNTER, wb.pending["OpportunityLineItem"][0][1])
+
+    def test_blank_salesforce_value_takes_a_positive_odoo_value(self):
+        wb, _ = self.plan(sf_value=None, odoo_value_rec=deliverable_rec(deliverable_delivered_count=1))
+        self.assertEqual(wb.pending["OpportunityLineItem"][0][1][COUNTER], 1)
+
+    def test_zero_odoo_value_over_blank_is_not_written(self):
+        wb, _ = self.plan(sf_value=None, odoo_value_rec=deliverable_rec(deliverable_delivered_count=0,
+                                                                        qty_delivered=0))
+        self.assertNotIn(COUNTER, wb.pending.get("OpportunityLineItem", [("", {})])[0][1])
+        self.assertEqual(wb.counts[("OpportunityLineItem", "counter kept")], 0)
+
+    def test_text_counter_is_compared_as_a_number(self):
+        wb, out = self.plan(sf_value="10", odoo_value_rec=deliverable_rec(deliverable_delivered_count=9),
+                            counter_type="string")
+        self.assertIn("lower than Salesforce 10", out)  # "10" > 9 numerically, not as text
+        self.assertEqual(wb.counts[("OpportunityLineItem", "counter kept")], 1)
+
+    def test_summary_reports_the_count(self):
+        wb, _ = self.plan(sf_value=5.0, odoo_value_rec=deliverable_rec(deliverable_delivered_count=2))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            wb.summary()
+        self.assertIn("Delivered counter kept (Odoo lower than Salesforce, not written): 1 lines", out.getvalue())
+
+
+class CounterValueTests(unittest.TestCase):
+    def test_deliverable_line_counter_is_the_delivered_waves(self):
+        with mock.patch.object(config, "SF_DELIVERED_FIELD", COUNTER):
+            self.assertEqual(_line_values(deliverable_rec(deliverable_delivered_count=3, deliverable_count=4))[COUNTER], 3)
+
+    def test_subscription_counter_is_qty_invoiced_capped_at_quantity(self):
+        sub = {"id": 1, "qty_invoiced": 1.0, "product_uom_qty": 1.0, "qty_delivered": 0.0,
+               "deliverable_count": 0, "deliverable_delivered_count": 0}
+        with mock.patch.object(config, "SF_DELIVERED_FIELD", COUNTER):
+            self.assertEqual(_line_values(sub)[COUNTER], 1.0)
+            self.assertEqual(_line_values(dict(sub, qty_invoiced=3.0, product_uom_qty=2.0))[COUNTER], 2.0)
+            self.assertEqual(_line_values(dict(sub, qty_invoiced=0.0))[COUNTER], 0.0)
+
+    def test_odoo_qty_delivered_is_unchanged_by_the_counter(self):
+        with mock.patch.object(config, "SF_DELIVERED_FIELD", COUNTER):
+            values = _line_values(deliverable_rec(deliverable_delivered_count=3, deliverable_count=4))
+        self.assertEqual(values["Odoo_Qty_Delivered__c"], 3)
 
 
 if __name__ == "__main__":

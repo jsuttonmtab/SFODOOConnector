@@ -83,8 +83,18 @@ def _wire(field, value):
 
 
 def _changes(current, desired):
-    """Fields whose Salesforce value differs from the wanted one, as sent to Salesforce."""
-    return {f: _wire(f, w) for f, w in desired.items() if _norm(f, current.get(f)) != _norm(f, w)}
+    """Fields whose Salesforce value differs from the wanted one, as sent to Salesforce. The delivered counter is
+    never lowered: it is written only when the Odoo value is greater than the Salesforce value (historical NetSuite
+    values survive). A lower Odoo value is reported by _plan, not written."""
+    changes = {}
+    for f, w in desired.items():
+        cur, want = _norm(f, current.get(f)), _norm(f, w)
+        if f == config.SF_DELIVERED_FIELD and f:
+            if want > cur:
+                changes[f] = _wire(f, w)
+        elif cur != want:
+            changes[f] = _wire(f, w)
+    return changes
 
 
 def _error_text(messages):
@@ -111,16 +121,20 @@ def _line_values(rec):
     """§5.1 quantities and fulfilment for one order line. "Delivered" is the Delivery Tracker's delivered mark:
     the delivered count of a deliverable line (deliverable_delivered_count), and qty_delivered of any other line.
     A deliverable line (deliverable_count > 0) is fulfilled when all its deliverables are delivered. Other lines
-    (subscriptions) are fulfilled when fully invoiced. The delivered value also goes to the org's delivered counter
-    when SF_DELIVERED_FIELD names one."""
+    (subscriptions) are fulfilled when fully invoiced.
+    The delivered counter (SF_DELIVERED_FIELD) is the number of delivered waves for a deliverable line
+    (deliverable_delivered_count), and qty_invoiced capped at the quantity for any other line (fulfilled when
+    invoiced). Odoo_Qty_Delivered__c is not changed by this."""
     invoiced = rec["qty_invoiced"] or 0
     if (rec["deliverable_count"] or 0) > 0:
         delivered = rec["deliverable_delivered_count"] or 0
         fulfilled = delivered >= rec["deliverable_count"]
+        counter = delivered
     else:
         delivered = rec["qty_delivered"] or 0
         quantity = rec["product_uom_qty"] or 0
         fulfilled = quantity > 0 and round(invoiced, 2) >= round(quantity, 2)
+        counter = min(invoiced, quantity)
     values = {
         "Odoo_Line_ID__c": rec["id"],
         "Odoo_Qty_Delivered__c": delivered,
@@ -128,7 +142,7 @@ def _line_values(rec):
         "Odoo_Fulfilled__c": fulfilled,
     }
     if config.SF_DELIVERED_FIELD:
-        values[config.SF_DELIVERED_FIELD] = delivered
+        values[config.SF_DELIVERED_FIELD] = counter
     return values
 
 
@@ -253,12 +267,20 @@ class WriteBack:
     # ----- planning and sending -----
 
     def _plan(self, sobject, sf_id, label, current, desired, stamp=False, count_unchanged=True, group=None):
-        """Queue the record if any wanted value differs. stamp: also set Odoo_Last_Sync__c, which is
-        done only when something else on the record changes. count_unchanged False: a record with no
-        Odoo record yet is counted under "no Odoo record", not as unchanged. group: records with the same
-        group are sent in the same Salesforce call (the lines of one opportunity). The PATCH body uses the
-        org's API names and the org's value types."""
+        """Queue the record if any wanted value differs. stamp: also set Odoo_Last_Sync__c, which is done only when
+        something else on the record changes. count_unchanged False: a record with no Odoo record yet is counted under
+        "no Odoo record", not as unchanged. group: records with the same group are sent in the same Salesforce call
+        (the lines of one opportunity). The PATCH body uses the org's API names and value types. The delivered
+        counter is never lowered: when the Odoo value is lower than the Salesforce value, it is reported here as a
+        warning and counted ("delivered counter kept"); the rest of the record is still written."""
         self.labels[(sobject, sf_id)] = label
+        name = f" {label}" if label else ""
+        counter = config.SF_DELIVERED_FIELD
+        if counter and sobject == "OpportunityLineItem" and counter in desired:
+            if _norm(counter, desired[counter]) < _norm(counter, current.get(counter)):
+                self.counts[(sobject, "counter kept")] += 1
+                print(f"WARNING {sobject} {sf_id}{name}: Odoo delivered value {_show(desired[counter])} is lower than "
+                      f"Salesforce {_show(current.get(counter))} ({counter} kept)")
         changes = _changes(current, desired)
         if not changes:
             if count_unchanged:
@@ -268,7 +290,6 @@ class WriteBack:
             changes["Odoo_Last_Sync__c"] = self.now
         detail = ", ".join(f"{f}: {_show(current.get(f))} -> {_show(v)}" for f, v in changes.items())
         prefix = "[dry-run] would update" if self.dry_run else "update"
-        name = f" {label}" if label else ""
         print(f"{prefix} {sobject} {sf_id}{name}: {detail}")
         self.counts[(sobject, "planned")] += 1
         payload = {"attributes": {"type": sobject}, "Id": sf_id,
@@ -451,6 +472,9 @@ class WriteBack:
             parts.append(f"{label} {verb} {planned - failed}, unchanged {c[(sobject, 'unchanged')]}, "
                          f"failed {failed}, no Odoo record {c[(sobject, 'no Odoo record')]}")
         print(f"\nSalesforce write-back ({mode}): " + "; ".join(parts))
+        if c[("OpportunityLineItem", "counter kept")]:
+            print(f"Delivered counter kept (Odoo lower than Salesforce, not written): "
+                  f"{c[('OpportunityLineItem', 'counter kept')]} lines")
         for sobject, label in (("Account", "accounts"), ("Opportunity", "opportunities")):
             if c[(sobject, "error checked")]:
                 print(f"Odoo_Sync_Error__c non-blank, {label}: {c[(sobject, 'error before')]} with every message, "

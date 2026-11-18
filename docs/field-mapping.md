@@ -606,16 +606,17 @@ layouts (`INV001825.pdf`, mTab LLC; `INVG011392.pdf`, G.A.M.M.A).
 - Not verified against Odoo 19 yet: the paper format codes (`Letter`, `A4`), the page footer (`web.internal_layout`
   for the "x/y" page number), and the Print override (`action_invoice_print`).
 
-### 5.1a The delivered counter (decision pending, 2026-11-18)
+### 5.1a The delivered counter (decided 2026-11-18)
 
-The team watches an existing Salesforce counter on OpportunityLineItem that Celigo used to update from NetSuite. The
-write-back did not touch it, only `Odoo_Qty_Delivered__c`. The counter is set by `SF_DELIVERED_FIELD` (empty by default,
-so nothing is written until the field is chosen). Two candidates in the org, and they disagree on most lines:
+`SF_DELIVERED_FIELD = Fulfillment_Quantity__c` (a number; the team's counter, Celigo's "Fulfilled"). `Quantity_Fulfilled__c`
+(text, labelled DNU) is not used.
 
-- `Quantity_Fulfilled__c` (label "Quantity Fulfilled_DNU", text): 787 lines have a value, mostly whole numbers (1, 2, 3)
-  and some fractions (0.5, 12.5).
-- `Fulfillment_Quantity__c` (label "Fulfillment Quantity", number): 7,322 lines are above zero. On many fulfilled
-  subscriptions it equals Quantity (50 of 50, 100 of 100), which suggests Celigo's rule for subscriptions is
-  "quantity once fully delivered".
-
-Open: which field is the team's counter, and the subscription rule. Until decided, subscriptions write `qty_delivered`.
+- Value. Deliverable products (`deliverable_count > 0`): the number of delivered waves, `deliverable_delivered_count`.
+  Subscriptions and other products: `qty_invoiced`, capped at the quantity (fulfilled when invoiced).
+- Never lower. The counter is written only when the Odoo value is greater than the Salesforce value, so historical
+  NetSuite values survive. A lower Odoo value is kept, logged as `WARNING OpportunityLineItem … (Fulfillment_Quantity__c
+  kept)`, and counted in the summary as "Delivered counter kept (…): N lines". Those warnings repeat each run while the
+  values differ.
+- `Odoo_Qty_Delivered__c` is unchanged by this rule.
+- Dry run on 2026-11-18: the counter would change 2 lines (both on 006hu000000m2NhAAI, 0 → 1), and 3,869 lines are kept
+  (Odoo 0, Salesforce 1 to 50, from NetSuite).

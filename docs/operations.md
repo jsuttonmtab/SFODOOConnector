@@ -190,8 +190,8 @@ xpath or view id; the rest of the module does not depend on it.
 2. `git pull --ff-only`, then `python3 -m connector.check_connections`.
 3. The connector's description lock is now a warning, not an error: a line with a changed description on an invoiced
    line shows `WARNING description not updated (line is delivered or invoiced)` once per run.
-4. `SF_DELIVERED_FIELD` stays empty until the field is chosen (docs/field-mapping.md §5.1a). Do not set it on the
-   server without the decision: the counter would change about 3,900 lines in the sandbox.
+4. Set `SF_DELIVERED_FIELD=Fulfillment_Quantity__c` in the server's `.env` (decided 2026-11-18, docs/field-mapping.md
+   §5.1a). The counter is never lowered; lines where Odoo is lower than Salesforce are logged as warnings.
 
 ## Upgrade to sf_connector 19.0.1.8.0 (information-only lines, description field, invoice layout)
 
