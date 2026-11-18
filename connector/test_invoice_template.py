@@ -160,12 +160,12 @@ class FontSizeAndWebsiteTests(unittest.TestCase):
     def setUp(self):
         self.text = TEMPLATE.read_text(encoding="utf-8")
 
-    def test_body_is_9_5_pt(self):
-        self.assertIn(".sf-inv td, .sf-inv th, .sf-inv div, .sf-inv span, .sf-inv address { font-size: 9.5pt; }", self.text)
-        self.assertIn('<div class="sf-inv" style="font-size: 9.5pt;', self.text)
+    def test_body_is_9_35_pt(self):
+        self.assertIn(".sf-inv td, .sf-inv th, .sf-inv div, .sf-inv span, .sf-inv address { font-size: 9.35pt; }", self.text)
+        self.assertIn("<div class=\"sf-inv\" style=\"font-family: 'Noto Sans', 'Nimbus Sans', sans-serif; font-size: 9.35pt;", self.text)
 
-    def test_footer_is_9_5_pt_and_has_no_grid_lines(self):
-        self.assertIn('<div class="footer sf-footer" style="font-size: 9.5pt;', self.text)
+    def test_footer_is_9_35_pt_and_has_no_grid_lines(self):
+        self.assertIn("<div class=\"footer sf-footer\" style=\"font-family: 'Noto Sans', 'Nimbus Sans', sans-serif; font-size: 9.35pt;", self.text)
         self.assertIn(".sf-footer table, .sf-footer td, .sf-footer th { border: 0 !important;", self.text)
 
     def test_title_and_total_sizes(self):
@@ -177,6 +177,37 @@ class FontSizeAndWebsiteTests(unittest.TestCase):
     def test_website_is_printed_without_the_scheme(self):
         self.assertIn("o.sf_company_website()", self.text)
         self.assertNotIn('t-esc="c.website"', self.text)  # the raw field (with http://) is never printed
+
+
+class CharsetFontAndLayoutRulesTests(unittest.TestCase):
+    """Charset, font, Bill To, Tax Reg. label, row rules and keep-together rules (reviewed on the NetSuite references)."""
+
+    def setUp(self):
+        self.text = TEMPLATE.read_text(encoding="utf-8")
+
+    def test_report_declares_utf8(self):
+        self.assertIn('<meta charset="utf-8"/>', self.text)
+
+    def test_font_is_noto_sans_first_and_lato_is_not_used(self):
+        self.assertEqual(self.text.count("'Noto Sans', 'Nimbus Sans', sans-serif"), 4)  # body, body CSS, footer, footer CSS
+        self.assertNotIn("Lato", self.text)
+
+    def test_bill_to_prints_company_once_and_contact_only_when_it_differs(self):
+        self.assertIn("o.commercial_partner_id.name", self.text)
+        self.assertIn('o.partner_id.name != o.commercial_partner_id.name', self.text)
+        self.assertIn('"fields": ["address"]', self.text)  # the address widget does not print the name again
+        self.assertNotIn('"fields": ["name", "address"]', self.text)
+
+    def test_tax_reg_label_only_when_there_is_a_value(self):
+        self.assertRegex(self.text, r'<t t-if="o\.partner_id\.vat">\s*<div[^>]*>Tax Reg\. Number</div>')
+
+    def test_row_rules_are_only_on_llc(self):
+        self.assertIn("t-att-style=\"None if gamma else 'border-top: 1px solid #e3e8ee;'\"", self.text)
+
+    def test_totals_early_payment_notes_and_payment_are_kept_together(self):
+        self.assertIn('<table class="sf-keep" style="width: 46%', self.text)
+        self.assertGreaterEqual(self.text.count('class="sf-keep"'), 4)
+        self.assertIn(".sf-inv tr { page-break-inside: avoid; }", self.text)
 
 
 class WebsiteHelperTests(unittest.TestCase):

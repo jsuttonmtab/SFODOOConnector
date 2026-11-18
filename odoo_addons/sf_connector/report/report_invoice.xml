@@ -55,10 +55,11 @@
          the footer table has no grid lines. -->
     <template id="sf_invoice_layout">
         <div class="header"/>
-        <div class="footer sf-footer" style="font-size: 9.5pt; color: #222; width: 100%;">
+        <div class="footer sf-footer" style="font-family: 'Noto Sans', 'Nimbus Sans', sans-serif; font-size: 9.35pt; color: #222; width: 100%;">
             <style>
+                .sf-footer, .sf-footer * { font-family: 'Noto Sans', 'Nimbus Sans', sans-serif !important; }
                 .sf-footer table, .sf-footer td, .sf-footer th { border: 0 !important; border-collapse: collapse; }
-                .sf-footer td, .sf-footer th { padding: 0 4px; font-size: 9.5pt; }
+                .sf-footer td, .sf-footer th { padding: 0 4px; font-size: 9.35pt; }
             </style>
             <div t-field="o.company_id.sf_footer_html"/>
             <div style="text-align: right; margin-top: 3px;">Page <span class="page"/> of <span class="topage"/></div>
@@ -68,6 +69,7 @@
 
     <template id="report_sf_invoice">
         <t t-call="web.html_container">
+            <meta charset="utf-8"/>
             <t t-foreach="docs" t-as="o">
                 <t t-call="sf_connector.report_sf_invoice_document" t-lang="o.partner_id.lang"/>
             </t>
@@ -80,15 +82,18 @@
         <t t-set="lines" t-value="o.invoice_line_ids.filtered(lambda l: l.display_type == 'product' and not l.sf_information_only)"/>
         <t t-set="offers" t-value="o.sf_early_payment_offers()"/>
         <t t-call="sf_connector.sf_invoice_layout">
-            <div class="sf-inv" style="font-size: 9.5pt; color: #222;">
+            <div class="sf-inv" style="font-family: 'Noto Sans', 'Nimbus Sans', sans-serif; font-size: 9.35pt; color: #222;">
                 <!-- Sizes, measured on the NetSuite reference (8 pt body, labels, table, totals and footer; 12.8 pt title;
                      19.2 pt total). wkhtmltopdf renders CSS points at about 0.84 to 0.85 of their value. So body text is
-                     9.5 pt CSS (about 8 pt rendered), the title stays at 15 pt (12.8 pt) and the total is 22.7 pt CSS
+                     9.35 pt CSS (about 8 pt rendered), the title stays at 15 pt (12.8 pt) and the total is 22.7 pt CSS
                      (about 19.2 pt). The amount span carries its own size. No cell borders, no italic address, and nothing
                      wraps in the due date or the early payment box. -->
                 <style>
+                    .sf-inv, .sf-inv * { font-family: 'Noto Sans', 'Nimbus Sans', sans-serif !important; }
                     .sf-inv table, .sf-inv td, .sf-inv th { border: 0 !important; border-collapse: collapse; }
-                    .sf-inv td, .sf-inv th, .sf-inv div, .sf-inv span, .sf-inv address { font-size: 9.5pt; }
+                    .sf-inv tr { page-break-inside: avoid; }
+                    .sf-inv .sf-keep { page-break-inside: avoid; }
+                    .sf-inv td, .sf-inv th, .sf-inv div, .sf-inv span, .sf-inv address { font-size: 9.35pt; }
                     .sf-inv td, .sf-inv th { padding: 2px 4px; vertical-align: top; }
                     .sf-inv address { font-style: normal; margin: 0; }
                     .sf-inv .sf-nowrap { white-space: nowrap; }
@@ -131,7 +136,11 @@
                     <tr>
                         <td rowspan="2" style="width: 34%;">
                             <div style="color: #1f5f99; font-weight: bold;">Bill To</div>
-                            <div style="font-style: normal;" t-field="o.partner_id" t-options='{"widget": "contact", "fields": ["name", "address"], "no_marker": true}'/>
+                            <div style="font-style: normal;">
+                                <div t-esc="o.commercial_partner_id.name"/>
+                                <div t-if="o.partner_id.name and o.partner_id.name != o.commercial_partner_id.name" t-esc="o.partner_id.name"/>
+                                <div t-field="o.partner_id" t-options='{"widget": "contact", "fields": ["address"], "no_marker": true}'/>
+                            </div>
                         </td>
                         <td style="width: 22%;">
                             <div style="color: #1f5f99; font-weight: bold;">Date</div>
@@ -148,8 +157,10 @@
                     </tr>
                     <tr>
                         <td style="padding-top: 8px;">
-                            <div style="color: #1f5f99; font-weight: bold;">Tax Reg. Number</div>
-                            <div t-esc="o.partner_id.vat or ''"/>
+                            <t t-if="o.partner_id.vat">
+                                <div style="color: #1f5f99; font-weight: bold;">Tax Reg. Number</div>
+                                <div t-esc="o.partner_id.vat"/>
+                            </t>
                         </td>
                         <td style="padding-top: 8px;">
                             <div style="color: #1f5f99; font-weight: bold;">TERMS</div>
@@ -178,7 +189,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <tr t-foreach="lines" t-as="line" style="border-top: 1px solid #e3e8ee;">
+                        <tr t-foreach="lines" t-as="line" t-att-style="None if gamma else 'border-top: 1px solid #e3e8ee;'">
                             <td style="padding: 8px 4px;">
                                 <span t-field="line.name"/><t t-if="line.sf_combined_description"> <i>(<span t-esc="line.sf_combined_description"/>)</i></t>
                             </td>
@@ -200,7 +211,7 @@
                 </table>
 
                 <!-- Totals, right aligned -->
-                <table style="width: 46%; margin-left: auto; margin-top: 8px;">
+                <table class="sf-keep" style="width: 46%; margin-left: auto; margin-top: 8px;">
                     <tr>
                         <td style="text-align: right; padding: 3px 6px;">Subtotal</td>
                         <td style="text-align: right; padding: 3px 4px; width: 42%;"><span t-esc="o.sf_money(o.amount_untaxed)"/></td>
@@ -226,6 +237,7 @@
                         </td>
                         <td style="width: 60%;">
                             <t t-if="offers">
+                              <div class="sf-keep">
                                 <div style="color: #1f5f99; font-weight: bold;">Early Payment Discount Offer:</div>
                                 <table style="width: 100%; border: 1px solid #4aa3e8 !important; margin-top: 4px;">
                                     <t t-foreach="offers" t-as="offer">
@@ -240,6 +252,7 @@
                                         </tr>
                                     </t>
                                 </table>
+                              </div>
                             </t>
                         </td>
                     </tr>
@@ -247,11 +260,11 @@
 
                 <!-- LLC: legal payment paragraph, then Notes. G.A.M.M.A: Notes, then Payment instructions. -->
                 <div t-if="not gamma and c.sf_legal_html" style="margin-top: 12px;" t-field="c.sf_legal_html"/>
-                <div t-if="c.sf_notes_html" style="margin-top: 12px;">
+                <div t-if="c.sf_notes_html" class="sf-keep" style="margin-top: 12px;">
                     <div style="color: #1f5f99; font-weight: bold;">Notes</div>
                     <div t-field="c.sf_notes_html"/>
                 </div>
-                <div t-if="gamma and c.sf_payment_html" style="margin-top: 12px;">
+                <div t-if="gamma and c.sf_payment_html" class="sf-keep" style="margin-top: 12px;">
                     <div style="color: #1f5f99; font-weight: bold;">Payment instructions</div>
                     <div t-field="c.sf_payment_html"/>
                 </div>
