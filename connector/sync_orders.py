@@ -55,6 +55,8 @@ ORDER_M2O = {"partner_id", "company_id", "pricelist_id", "payment_term_id", "use
              "partner_invoice_id", "sf_revenue_allocation_company_id", "project_id"}
 # §4.4 header fields: once the order exists, changes are errors and are not applied.
 LOCKED = ("partner_id", "company_id", "pricelist_id", "sf_award_won_date")
+# Fields whose problem or mismatch stops the whole order (header and lines), not just the one field.
+STOP_FIELDS = ("company_id", "pricelist_id")
 
 
 def stage_list_soql():
@@ -233,9 +235,20 @@ class OrderSync(AccountSync):
             "payment_term_id": self.opp_terms(opp, problems),
             "user_id": self.opp_user(opp),
         }
-        if not text(opp.get("CurrencyIsoCode")):
+        code = text(opp.get("CurrencyIsoCode"))
+        company_id = vals.get("company_id") or None
+        if not code:
             problems["pricelist_id"] = "no currency"
-        vals["pricelist_id"] = self.pricelist_for(text(opp.get("CurrencyIsoCode")), vals.get("company_id") or None)
+        elif not company_id:
+            problems["pricelist_id"] = "no billing company, so no pricelist"
+        else:
+            pricelist = self.order_pricelist(code, company_id)
+            if pricelist:
+                vals["pricelist_id"] = pricelist
+            else:
+                name = next((n for n, i in self.companies.items() if i == company_id), company_id)
+                problems["pricelist_id"] = (f"{name} has no {code} pricelist in Odoo (create one for that company; "
+                                            f"none is created by the sync)")
         if partner_id is PENDING_PARTNER:
             pass  # dry run: the customer is created by the account sync in this run
         elif partner_id:
@@ -383,6 +396,14 @@ class OrderSync(AccountSync):
             partner_id = PENDING_PARTNER
         vals, problems = self.order_vals(opp, partner_id)
 
+        # The company and pricelist decide which books the order is in. If either cannot be resolved, the order is
+        # not created or changed, and its lines are not synced either (the error is on the opportunity).
+        stop = {f: problems[f] for f in STOP_FIELDS if f in problems}
+        if stop:
+            prefix = "not created" if existing is None else "not applied, order left as it is"
+            self.order_error(opp, f"{prefix}: " + "; ".join(stop.values()))
+            return False, existing["id"] if existing else None
+
         if existing is None:
             if problems:
                 self.order_error(opp, "not created: " + "; ".join(problems.values()))
@@ -402,6 +423,16 @@ class OrderSync(AccountSync):
                 order_id = self.odoo.create("sale.order", [vals])[0]
             self.counts["created"] += 1
             return True, order_id
+
+        # A company or pricelist that differs from the order's (locked, §4.4) stops the order: nothing is written and
+        # its lines are not synced, so the books cannot be mixed. Other locked fields are reported and skipped below.
+        mismatched = [(f, diff(existing, {f: vals[f]}, ORDER_M2O)) for f in STOP_FIELDS if f in vals]
+        mismatched = [(f, changed[0]) for f, changed in mismatched if changed]
+        if mismatched:
+            for field, (_, current, wanted) in mismatched:
+                self.order_error(opp, f"locked field {field} changed {show(current)} -> {show(wanted)}; "
+                                      f"order not synced (left as it is in Odoo)")
+            return False, existing["id"]
 
         # Locked header fields (§4.4): report and do not apply.
         for field in LOCKED:
@@ -722,7 +753,7 @@ def main(argv=None):
 
     unwritten = 0  # Salesforce records the write-back did not write (exit code 4)
     try:
-        odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY)
+        odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY, company_ids=config.ODOO_COMPANY_IDS)
         sf = SalesforceClient(get_session())
         check_org(sf, args.dry_run)
         sync = OrderSync(odoo, args.dry_run, allow_mass_removal=args.allow_mass_removal)

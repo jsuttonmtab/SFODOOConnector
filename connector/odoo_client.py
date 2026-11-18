@@ -27,7 +27,7 @@ def m2o_id(value):
 
 
 class OdooClient:
-    def __init__(self, url, db, api_key, timeout=300, retries=3, backoff=1.0, sleep=time.sleep):
+    def __init__(self, url, db, api_key, timeout=300, retries=3, backoff=1.0, sleep=time.sleep, company_ids=None):
         if not (url and db and api_key):
             raise OdooError("ODOO_URL, ODOO_DB and ODOO_API_KEY must be set (connector/.env)")
         self.base_url = url.rstrip("/")
@@ -37,11 +37,22 @@ class OdooClient:
         self.retries = retries
         self.backoff = backoff
         self.sleep = sleep
+        # Companies every call may read and write (allowed_company_ids). Without it Odoo uses the API user's default
+        # context, which can hide a company's records. Empty means the default.
+        self.company_ids = [int(c) for c in (company_ids or [])]
+
+    def _with_companies(self, kwargs):
+        if not self.company_ids:
+            return kwargs
+        context = dict(kwargs.get("context") or {})
+        context.setdefault("allowed_company_ids", self.company_ids)
+        return {**kwargs, "context": context}
 
     def call(self, model, method, **kwargs):
         """Call a model method. Connection errors and 502/503/504 are retried up to `retries`
         times with exponential backoff (1s, 2s, 4s by default). The last error is raised, so the
         caller fails the record it was working on rather than the whole run."""
+        kwargs = self._with_companies(kwargs)
         for attempt in range(self.retries + 1):
             try:
                 return self._send(model, method, kwargs)

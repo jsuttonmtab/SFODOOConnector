@@ -39,6 +39,9 @@ ODOO_API_KEY = os.environ.get("ODOO_API_KEY", "")
 # Optional: login of the user the API key belongs to. Used only to warn when that user is the
 # FINANCE_ACTIVITY_USER (Odoo does not email an assignment to yourself).
 ODOO_API_LOGIN = os.environ.get("ODOO_API_LOGIN", "").strip()
+# Optional: the Odoo company ids every call may use, e.g. "1,2" (mTab LLC and G.A.M.M.A). Sent as allowed_company_ids.
+# Empty uses the API user's default companies, which can hide a company's records.
+ODOO_COMPANY_IDS = [int(c) for c in os.environ.get("ODOO_COMPANY_IDS", "").replace(" ", "").split(",") if c]
 
 # Salesforce org alias for the sf CLI (used only when SF_CLIENT_ID/SECRET are not set).
 SF_TARGET_ORG = os.environ.get("SF_TARGET_ORG", "mtab-sandbox")

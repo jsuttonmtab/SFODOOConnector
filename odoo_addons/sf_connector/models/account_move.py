@@ -9,6 +9,22 @@ from odoo.exceptions import UserError
 # Customer invoices and credit notes: the documents the connector attaches to Salesforce (docs/field-mapping.md §5.2).
 SF_PDF_TYPES = ('out_invoice', 'out_refund')
 
+# Company fields that change the printed invoice. A change to any of them makes the connector re-render the invoice
+# (sf_render_keys). Keep this list in step with report/report_invoice.xml.
+SF_COMPANY_RENDER_FIELDS = (
+    'name', 'street', 'street2', 'city', 'zip', 'state_id', 'country_id', 'website',
+    'sf_invoice_layout', 'sf_trading_name', 'sf_tax_id', 'sf_header_html', 'sf_notes_html',
+    'sf_payment_html', 'sf_legal_html', 'sf_footer_html',
+    'sf_epd_days_1', 'sf_epd_percent_1', 'sf_epd_days_2', 'sf_epd_percent_2',
+)
+
+
+def _key_value(value):
+    """A field value as text for the render key: a record gives its id, nothing gives an empty string."""
+    if isinstance(value, models.BaseModel):
+        return str(value.id) if value else ''
+    return '' if value is None or value is False else str(value)
+
 
 class AccountMove(models.Model):
     _inherit = 'account.move'
@@ -22,6 +38,12 @@ class AccountMove(models.Model):
         string='Salesforce PDF Sent At',
         copy=False,
         help='When the connector last recorded a Salesforce attachment for this invoice (UTC). Set by the connector.',
+    )
+    sf_pdf_render_key = fields.Char(
+        string='Salesforce PDF Render Key',
+        copy=False,
+        help='The render key (sf_render_keys) of the PDF last sent. Set by the connector. A different key means the '
+             'template or the company invoice settings changed, so the connector renders the invoice again.',
     )
 
     def _sf_invoice_report_xmlid(self):
@@ -107,6 +129,22 @@ class AccountMove(models.Model):
                 'amount': amount,
             })
         return offers
+
+    def sf_render_keys(self):
+        """{invoice id: render key}. The key covers the sf_connector version that is installed, the report that applies
+        to the invoice (mTab LLC or G.A.M.M.A), every company field that is printed (SF_COMPANY_RENDER_FIELDS) and a hash
+        of the company logo. The connector re-renders an invoice whose key differs from the key recorded with the last
+        PDF sent, so a template change or a change to the company's invoice settings reaches invoices already sent."""
+        module = self.env['ir.module.module'].sudo().search([('name', '=', 'sf_connector')], limit=1)
+        version = module.installed_version or ''
+        keys = {}
+        for move in self:
+            company = move.company_id
+            parts = [version, move._sf_invoice_report_xmlid()]
+            parts += [f"{name}={_key_value(company[name])}" for name in SF_COMPANY_RENDER_FIELDS]
+            parts.append("logo=" + hashlib.sha256(company.logo or b'').hexdigest())
+            keys[move.id] = hashlib.sha256("\n".join(parts).encode('utf-8')).hexdigest()
+        return keys
 
     def sf_invoice_pdf(self):
         """Render the invoice report (the one Print uses) for posted customer invoices and credit notes. Called by

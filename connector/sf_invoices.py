@@ -5,7 +5,9 @@ Attachment named "<invoice number>.pdf" ("/" replaced by "-"), the mechanism and
 that spans two orders is attached to each opportunity once. A credit note (out_refund) follows
 SF_INVOICE_PDF_REFUNDS.
 
-Idempotent. An invoice whose PDF was sent since its last change is skipped without rendering. A rendered PDF whose
+Idempotent. An invoice whose PDF was sent since its last change, with the same render key (the sf_connector version,
+the report and the company's invoice settings, see account.move sf_render_keys), is skipped without rendering. A
+template or settings change gives a new key, so invoices already sent are rendered again. A rendered PDF whose
 checksum and size match the attachment already on the opportunity is unchanged. A changed PDF replaces the
 attachment of the same name (PATCH on Attachment.Body); it never adds a second one.
 
@@ -21,7 +23,8 @@ from .odoo_client import OdooError, m2o_id
 from .sf_client import SalesforceError, check_org
 
 INVOICE_TYPES = ("out_invoice", "out_refund")
-MOVE_FIELDS = ["id", "name", "move_type", "state", "write_date", "sf_pdf_checksum", "sf_pdf_sent_at"]
+MOVE_FIELDS = ["id", "name", "move_type", "state", "write_date", "sf_pdf_checksum", "sf_pdf_sent_at",
+               "sf_pdf_render_key"]
 ID_BATCH = 500
 OPP_BATCH = 150
 # An invoice changed after it was sent is one whose write_date is later than sf_pdf_sent_at. Recording the send
@@ -53,6 +56,14 @@ def _sent_since_change(move):
     """True when the PDF was recorded after the invoice last changed (so it need not be rendered again)."""
     sent, changed = _parse(move.get("sf_pdf_sent_at")), _parse(move.get("write_date"))
     return bool(sent and changed and changed <= sent + SENT_TOLERANCE)
+
+
+def render_keys(odoo, move_ids):
+    """{invoice id (as text): render key} for the invoices. Odoo returns the keys as JSON, so the ids are text."""
+    keys = {}
+    for chunk in _batches(sorted(move_ids), ID_BATCH):
+        keys.update(odoo.call("account.move", "sf_render_keys", ids=chunk) or {})
+    return {str(k): v for k, v in keys.items()}
 
 
 def invoice_targets(odoo, opportunity=None, refunds=True):
@@ -112,6 +123,7 @@ def write_invoice_pdfs(sf, odoo, dry_run, opportunity=None):
         check_org(sf, dry_run, log=False)
         targets = invoice_targets(odoo, opportunity, config.SF_INVOICE_PDF_REFUNDS)
         attachments = existing_attachments(sf, {opp for t in targets.values() for opp in t["opps"]})
+        keys = render_keys(odoo, targets)
     except (SalesforceError, OdooError) as err:
         print(f"Invoice PDFs stopped: {err}")
         return 0
@@ -120,7 +132,8 @@ def write_invoice_pdfs(sf, odoo, dry_run, opportunity=None):
     for move_id in sorted(targets):
         move, opps = targets[move_id]["move"], sorted(targets[move_id]["opps"])
         name = attachment_name(move["name"])
-        if all(attachments.get((opp, name)) for opp in opps) and _sent_since_change(move):
+        key = keys.get(str(move_id))
+        if all(attachments.get((opp, name)) for opp in opps) and _sent_since_change(move)                 and key and move.get("sf_pdf_render_key") == key:
             counts["unchanged"] += len(opps)
             for opp in opps:
                 print(f"unchanged {name} on {opp} (sent since the invoice last changed)")
@@ -168,7 +181,8 @@ def write_invoice_pdfs(sf, odoo, dry_run, opportunity=None):
                 failed.append((opp, move["name"], f"Salesforce: {err}"))
         if not dry_run and move_ok:  # record the send, so the next run can skip this invoice without rendering
             try:
-                odoo.write("account.move", [move_id], {"sf_pdf_checksum": checksum, "sf_pdf_sent_at": _now()})
+                odoo.write("account.move", [move_id], {"sf_pdf_checksum": checksum, "sf_pdf_sent_at": _now(),
+                                                       "sf_pdf_render_key": key or ""})
             except OdooError as err:
                 failed.append(("-", move["name"], f"could not record the send on the invoice: {err}"))
                 counts["failed"] += 1

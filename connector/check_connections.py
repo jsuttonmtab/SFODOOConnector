@@ -12,7 +12,7 @@ STAGE_FILTER = f"StageName = '{config.STAGE_AWARD_WON}'"
 
 
 def check_odoo():
-    odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY)
+    odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY, company_ids=config.ODOO_COMPANY_IDS)
     companies = odoo.search_read("res.company", [], ["id", "name"])
     print(f"  companies: {', '.join(c['name'] for c in companies) or '(none)'}")
     modules = odoo.search_read(

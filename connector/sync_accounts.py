@@ -346,6 +346,19 @@ class AccountSync:
                       f"{code}: {len(candidates)} usable", None)
         return candidates[0]["id"]
 
+    def order_pricelist(self, code, company_id):
+        """The pricelist for an order: a pricelist in this currency that belongs to the billing company. Only that
+        company's pricelist counts. A shared pricelist or another company's is never used, and none is created.
+        Returns the id, or None when the company has no pricelist in this currency."""
+        if not code or not company_id:
+            return None
+        owned = [p for p in self.pricelists.get(code, []) if m2o_id(p["company_id"]) == company_id]
+        if not owned:
+            return None
+        if len(owned) > 1:
+            self.warn("multiple pricelists for the company and currency (lowest id used)", code, None)
+        return min(owned, key=lambda p: p["id"])["id"]
+
     def pricelist_id(self, acc):
         return self.pricelist_for(text(acc.get("CurrencyIsoCode")))
 
@@ -598,13 +611,13 @@ def main(argv=None):
 
     if args.purge_sandbox:
         try:
-            return purge_sandbox(OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY), args.dry_run)
+            return purge_sandbox(OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY, company_ids=config.ODOO_COMPANY_IDS), args.dry_run)
         except OdooError as err:
             print(f"ERROR {err}")
             return 1
 
     try:
-        odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY)
+        odoo = OdooClient(config.ODOO_URL, config.ODOO_DB, config.ODOO_API_KEY, company_ids=config.ODOO_COMPANY_IDS)
         sf = SalesforceClient(get_session())
         check_org(sf, args.dry_run)
         accounts = sf.query(build_soql())

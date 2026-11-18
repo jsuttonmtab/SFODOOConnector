@@ -20,6 +20,9 @@ OLD = "2026-11-10 10:00:00"
 NEW = "2026-11-16 09:00:00"  # the invoice changed after it was sent
 
 
+RENDER_KEY = "render-key-1"  # what the fake Odoo reports as the invoice's render key by default
+
+
 def pdf_bytes(tag):
     return f"%PDF-1.4 fake invoice {tag}".encode() * 40
 
@@ -31,8 +34,12 @@ class FakeInvoiceOdoo(FakeOdoo):
         super().__init__(tables)
         self.pdfs = pdfs  # invoice id -> bytes
         self.renders = []
+        self.render_keys = {}  # invoice id -> render key (default RENDER_KEY)
 
     def call(self, model, method, **kwargs):
+        if model == "account.move" and method == "sf_render_keys":
+            # Odoo returns JSON, so the invoice ids are text.
+            return {str(i): self.render_keys.get(i, RENDER_KEY) for i in kwargs["ids"]}
         if model == "account.move" and method == "sf_invoice_pdf":
             out = []
             for move_id in kwargs["ids"]:
@@ -99,9 +106,9 @@ def tables(moves, sale_orders, lines=None, inv_lines=None):
     }
 
 
-def move(move_id, name, write_date=NEW, sent_at=None, checksum=None, move_type="out_invoice"):
+def move(move_id, name, write_date=NEW, sent_at=None, checksum=None, move_type="out_invoice", render_key=RENDER_KEY):
     return {"id": move_id, "name": name, "move_type": move_type, "state": "posted", "write_date": write_date,
-            "sf_pdf_checksum": checksum, "sf_pdf_sent_at": sent_at}
+            "sf_pdf_checksum": checksum, "sf_pdf_sent_at": sent_at, "sf_pdf_render_key": render_key}
 
 
 def order(order_id, opp):
@@ -159,6 +166,22 @@ class InvoicePdfTests(unittest.TestCase):
         self.assertEqual(write_invoice_pdfs(sf, odoo, dry_run=False), 0)
         self.assertEqual(odoo.renders, [])  # not rendered
         self.assertEqual(sf.writes, [])
+
+    def test_changed_render_key_renders_again_even_when_sent_after_the_last_change(self):
+        # A template or company-settings change: the invoice itself is unchanged and was sent after its last change,
+        # but the render key differs from the one recorded with the send, so the PDF is rendered again.
+        m = move(500, "INV/2026/00478", write_date=OLD, sent_at=NEW, checksum=hashlib.sha256(PDF).hexdigest(),
+                 render_key="render-key-0")
+        odoo = FakeInvoiceOdoo(self.one_order_tables(m), {500: PDF})
+        sf = FakeOrgSF([{"Id": "00Pa", "ParentId": OPP_A, "Name": NAME, "BodyLength": len(PDF)}])
+        write_invoice_pdfs(sf, odoo, dry_run=False)
+        self.assertEqual(odoo.renders, [500])
+        self.assertEqual(odoo.tables["account.move"][0]["sf_pdf_render_key"], RENDER_KEY)
+
+    def test_send_records_the_render_key(self):
+        odoo = FakeInvoiceOdoo(self.one_order_tables(move(500, "INV/2026/00478")), {500: PDF})
+        write_invoice_pdfs(FakeOrgSF(), odoo, dry_run=False)
+        self.assertEqual(odoo.tables["account.move"][0]["sf_pdf_render_key"], RENDER_KEY)
 
     def test_unchanged_after_render_writes_nothing_on_salesforce(self):
         # Changed since sent (so it is rendered), but the PDF is the same as the attachment: unchanged.
