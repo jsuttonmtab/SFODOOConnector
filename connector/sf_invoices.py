@@ -11,8 +11,10 @@ template or settings change gives a new key, so invoices already sent are render
 checksum and size match the attachment already on the opportunity is unchanged. A changed PDF replaces the
 attachment of the same name (PATCH on Attachment.Body); it never adds a second one.
 
-Gates: SF_WRITEBACK and SF_INVOICE_PDF, plus the sandbox guard (sf_client.check_org). --dry-run prints what would be
-attached and writes nothing. Does not write OpportunityLineItem. Does not raise: the Odoo side is already done.
+Gate: SF_INVOICE_PDF, plus the sandbox guard (sf_client.check_org). It does not need SF_WRITEBACK. Its only Salesforce
+writes are Attachment records (POST new, PATCH the body of the same name). It never writes an Opportunity, an
+OpportunityLineItem or any Odoo_* field, whatever SF_WRITEBACK is. --dry-run prints what would be attached and writes
+nothing. Does not raise: the Odoo side is already done.
 """
 import base64
 from collections import Counter
@@ -113,9 +115,6 @@ def write_invoice_pdfs(sf, odoo, dry_run, opportunity=None):
     invoice and opportunity and a summary. Returns the number of records that failed (0 if the step was off)."""
     if not config.SF_INVOICE_PDF:
         print("Invoice PDFs off (SF_INVOICE_PDF is not true): nothing attached")
-        return 0
-    if not dry_run and not config.SF_WRITEBACK:
-        print("Invoice PDFs off (SF_WRITEBACK is not true): nothing attached")
         return 0
     counts = Counter()
     failed = []

@@ -158,6 +158,29 @@ class InvoicePdfTests(unittest.TestCase):
         self.assertEqual(row["sf_pdf_checksum"], hashlib.sha256(PDF).hexdigest())
         self.assertTrue(row["sf_pdf_sent_at"])
 
+    def test_pdf_on_writeback_off_writes_only_attachments(self):
+        # New attachment with write-back off: the one Salesforce write is an Attachment POST; nothing else.
+        with mock.patch.object(config, "SF_WRITEBACK", False):
+            odoo = FakeInvoiceOdoo(self.one_order_tables(move(500, "INV/2026/00478")), {500: PDF})
+            sf = FakeOrgSF()
+            self.assertEqual(write_invoice_pdfs(sf, odoo, dry_run=False), 0)
+        writes = sf.sent("POST") + sf.sent("PATCH")
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][1], "/services/data/v68.0/sobjects/Attachment")
+        self.assertEqual(sf.sent("PATCH"), [])
+
+    def test_replacement_with_writeback_off_patches_only_the_attachment_body(self):
+        with mock.patch.object(config, "SF_WRITEBACK", False):
+            m = move(500, "INV/2026/00478", write_date=NEW, sent_at=OLD, checksum="stale")
+            odoo = FakeInvoiceOdoo(self.one_order_tables(m), {500: PDF})
+            sf = FakeOrgSF([{"Id": "00Pa", "ParentId": OPP_A, "Name": NAME, "BodyLength": 5}])
+            self.assertEqual(write_invoice_pdfs(sf, odoo, dry_run=False), 0)
+        self.assertEqual(sf.sent("POST"), [])
+        patches = sf.sent("PATCH")
+        self.assertEqual(len(patches), 1)
+        self.assertIn("/sobjects/Attachment/00Pa", patches[0][1])
+        self.assertEqual(set(patches[0][2].keys()), {"Body"})  # the body only: no Odoo_* or other field
+
     def test_unchanged_is_skipped_without_rendering(self):
         sent_at = NEW  # sent after the invoice last changed: the fast path
         m = move(500, "INV/2026/00478", write_date=OLD, sent_at=sent_at, checksum=hashlib.sha256(PDF).hexdigest())

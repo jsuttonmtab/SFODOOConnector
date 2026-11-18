@@ -5,8 +5,7 @@
 > 1. **Cloud Odoo**: where production Odoo runs, and whether the connector moves with it.
 > 2. **Salesforce integration user**: the connector logs in with the OAuth client-credentials flow
 >    when `SF_CLIENT_ID` and `SF_CLIENT_SECRET` are set. Without them it falls back to the CLI login
->    below. The server still uses the CLI login until the integration user can see and update records
->    (see *Salesforce write-back*).
+>    below. The server uses OAuth from 19.0.1.8.10 on; the CLI login stays as a fallback.
 
 ## What runs where
 
@@ -15,8 +14,8 @@
 | Odoo 19 sandbox (`OdooSandbox19`) | mpl-odoo, port 8069 |
 | Connector code | `/opt/sfsync/SFODOOConnector` |
 | Connector settings | `/opt/sfsync/SFODOOConnector/connector/.env` (git-ignored) |
-| Scheduled run | cron, as the `sfsync` user, every 15 minutes |
-| Wrapper script | `/opt/sfsync/run_sync.sh` |
+| Scheduled run | cron, as the `sfsync` user, every 5 minutes |
+| Wrapper script | `/opt/sfsync/run_sync.sh` (copied from `deploy/run_sync.sh` in the repo) |
 | Lock file | `/opt/sfsync/sync.lock` |
 | Logs | `/opt/sfsync/logs/sync-YYYYMMDD.log` |
 | Salesforce login | `sf` CLI login for alias `mtab-sandbox`, owned by `sfsync` |
@@ -116,7 +115,9 @@ Rules for this login:
 
 ## /opt/sfsync/run_sync.sh
 
-The cron job calls this wrapper. It:
+The cron job calls this wrapper. The source is `deploy/run_sync.sh` in the repo. The copy on the server
+is installed from it (see *Installing the wrapper*), and it must be refreshed after a `git pull` that changes
+the file. It:
 
 1. **Locks**: takes `flock -n` on `/opt/sfsync/sync.lock`. If the previous run still holds
    the lock, the new run is skipped and the skip is logged, so runs never overlap.
@@ -135,16 +136,52 @@ The cron job calls this wrapper. It:
 
 `--dry-run` is not used by the wrapper. Run it by hand when checking a change.
 
+### Installing the wrapper
+
+As root, after the repo is at the commit you want:
+
+```
+sudo install -o sfsync -g sfsync -m 750 /opt/sfsync/SFODOOConnector/deploy/run_sync.sh /opt/sfsync/run_sync.sh
+sudo diff /opt/sfsync/SFODOOConnector/deploy/run_sync.sh /opt/sfsync/run_sync.sh && echo same
+```
+
+Repeat the `install` after every `git pull` that changes `deploy/run_sync.sh`. The `diff` line should print `same`.
+
 ## Cron
 
 In the `sfsync` user's crontab (`crontab -e` as `sfsync`):
 
 ```
-*/15 * * * * /opt/sfsync/run_sync.sh
+*/5 * * * * /opt/sfsync/run_sync.sh
 ```
 
-Every 15 minutes. Because of the lock, a slow run delays the next one rather than overlapping
-it.
+Every 5 minutes. Because of the lock, a run that is still going when the next one starts makes that
+one skip (logged as `skipped: a run or a manual sync holds the lock`). Runs never overlap.
+
+**Check it ran:**
+
+```
+sudo -u sfsync grep -E '^=== |skipped' /opt/sfsync/logs/sync-$(date +%Y%m%d).log | tail -n 6
+sudo -u sfsync flock -n /opt/sfsync/sync.lock true && echo "lock free" || echo "lock held"
+```
+
+**Disable it quickly:** comment out the line in the `sfsync` crontab:
+
+```
+sudo -u sfsync bash -c 'crontab -l | sed "s|^\*/5|#*/5|" | crontab -'
+```
+
+Check with `sudo crontab -u sfsync -l`. Remove the `#` to turn it back on.
+
+**Manual syncs while the cron is on:** run them on the server under the same lock, so the cron run
+waits or skips:
+
+```
+sudo -u sfsync flock -w 900 /opt/sfsync/sync.lock bash -c 'cd /opt/sfsync/SFODOOConnector && python3 -m connector.sync_orders --opportunity <SF opportunity Id> --dry-run'
+```
+
+Do not run manual syncs from a workstation while the cron is on: the lock file is on the server only, so
+a workstation run cannot see the cron run, and both write to the same Odoo and Salesforce sandbox.
 
 ## Pulling code updates
 
@@ -233,7 +270,8 @@ Order: upgrade the Odoo module first, then pull the code (same reason as 19.0.1.
    `account.move.sf_invoice_pdf`, and write access to `sf_pdf_checksum` and `sf_pdf_sent_at` on invoices.
 3. `git pull --ff-only`, then `python3 -m connector.check_connections`.
 4. Turn it on in `connector/.env` only after a dry run: `SF_INVOICE_PDF=true` (and `SF_INVOICE_PDF_REFUNDS`, default
-   true). Without `SF_WRITEBACK=true` nothing is written.
+   true). It works with `SF_WRITEBACK=false`: its only Salesforce writes are Attachment records, never an Opportunity,
+   an OpportunityLineItem or an `Odoo_*` field.
 5. The log line `Invoice PDFs (...): attached a, replaced r, unchanged u, failed f` ends the step. `FAILED` lines name
    the invoice, the opportunity and the reason.
 
@@ -354,3 +392,12 @@ in the deployed metadata. After a refresh, expect:
 - Logs are kept 14 days and only on the server. Odoo and Salesforce keep no copy of the
   connector's output.
 - Odoo runs on the same host as the connector, so a host outage stops both.
+
+## Upgrade to sf_connector 19.0.1.8.10 (PDFs without write-back, 5-minute cron)
+
+1. `git pull --ff-only`, then `python3 -m connector.check_connections`.
+2. Install the wrapper from the repo and check the copy matches (see *Installing the wrapper*).
+3. Odoo: Apps → sf_connector → **Upgrade**. The render key changed, so each sent invoice is rendered again on its next
+   run, and its attachment in Salesforce is replaced in place (one replacement per invoice, no duplicates).
+4. `SF_INVOICE_PDF=true` now works with `SF_WRITEBACK=false`. Its Salesforce writes are Attachments only.
+5. Cron: change `*/15` to `*/5` (see *Cron*).

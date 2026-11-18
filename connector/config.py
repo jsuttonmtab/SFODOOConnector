@@ -63,7 +63,8 @@ SF_HOLD_NAME_UPDATES = os.environ.get("SF_HOLD_NAME_UPDATES", "false").strip().l
 # Empty (default): not written. Set it only after the field is chosen (docs/field-mapping.md §5.1); it is then
 # written with the same value as Odoo_Qty_Delivered__c, and its API name is resolved from describe.
 SF_DELIVERED_FIELD = os.environ.get("SF_DELIVERED_FIELD", "").strip()
-# Invoice PDFs attached to the Salesforce opportunity (docs/field-mapping.md §5.2). Needs SF_WRITEBACK too.
+# Invoice PDFs attached to the Salesforce opportunity (docs/field-mapping.md §5.2). Works without SF_WRITEBACK:
+# it writes only Attachment records.
 # Default false: nothing is attached. Credit notes follow SF_INVOICE_PDF_REFUNDS (default true).
 SF_INVOICE_PDF = os.environ.get("SF_INVOICE_PDF", "false").strip().lower() in ("1", "true", "yes")
 SF_INVOICE_PDF_REFUNDS = os.environ.get("SF_INVOICE_PDF_REFUNDS", "true").strip().lower() in ("1", "true", "yes")
