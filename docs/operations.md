@@ -430,3 +430,19 @@ exists only after the upgrade.
 3. `git pull --ff-only`. Invoice titles and the early-payment rule apply to the next print or PDF. Connector PDFs
    re-render because the render key changed.
 
+### Print, Send and the saved PDF (19.0.1.8.12, same upgrade)
+
+- **Print** (one invoice) and **Send** use the company's layout: mTab LLC on US Letter, G.A.M.M.A on A4. The saved PDF
+  (`invoice_pdf_report_id`) is the same PDF.
+- **Print of several invoices** from the list: one download. Each invoice is printed with its own company's layout,
+  and Odoo merges them in the order selected.
+- **Partner template:** a partner's explicit choice of template in Odoo wins over the company layout. Odoo's Send wizard
+  saves the chosen template on the partner when it differs from the default, so choosing the standard "Invoice PDF" once
+  makes it the partner's choice for good. Clear it on the partner (Invoicing tab → Invoice template) to go back to the
+  company layout.
+- **Journal template:** not used for customer invoices and credit notes; the company layout applies.
+- **Credit notes** print as "Credit Note" with no early-payment box. **Drafts** print as "Draft Invoice" / "Draft Credit
+  Note".
+- **Upgrade:** after upgrading the module, check one Print, one Send (to a test address) and one multi-select print with
+  invoices from both companies. The Send wizard's PDF selector stays hidden when only the company layout is offered.
+

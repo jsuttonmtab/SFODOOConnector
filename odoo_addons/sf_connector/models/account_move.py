@@ -54,14 +54,6 @@ class AccountMove(models.Model):
         return ('sf_connector.report_sf_invoice_gamma' if self.company_id.sf_invoice_layout == 'gamma'
                 else 'sf_connector.report_sf_invoice_llc')
 
-    def _sf_invoice_report(self):
-        return self.env.ref(self._sf_invoice_report_xmlid())
-
-    def action_invoice_print(self):
-        """Print: the company's invoice layout. The standard side effects of printing are kept."""
-        super().action_invoice_print()
-        return self[:1]._sf_invoice_report().report_action(self)
-
     def sf_format_date(self, value):
         """A date as the invoice prints it, e.g. "1 May 2026" (day without a leading zero)."""
         return f"{value.day} {value:%B %Y}" if value else ''
