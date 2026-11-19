@@ -1,5 +1,6 @@
-"""Print, Send and the saved invoice PDF for customer invoices and credit notes: the partner's own template wins, otherwise
-the company's layout; several invoices render each with their company's report and come back in the order asked for.
+"""Print, Send and the saved invoice PDF for customer invoices and credit notes: always the company's own layout. A
+partner's template is ignored, Odoo's standard layouts are never used, and the Send wizard does not offer them.
+Several invoices render each with their company's report and come back in the order asked for.
 The modules are loaded against a stand-in for odoo (base classes and the environment are simple fakes). No Odoo needed.
 
 Run from the repo root:  python -m unittest connector.test_invoice_send_and_print
@@ -21,11 +22,20 @@ def load(name, filename, base):
     odoo = types.ModuleType("odoo")
     odoo.models = types.SimpleNamespace(Model=base, AbstractModel=base)
     odoo.api = types.SimpleNamespace(model=lambda f: f)
-    with mock.patch.dict(sys.modules, {"odoo": odoo}):
+    odoo.fields = _Anything()
+    exceptions = types.ModuleType("odoo.exceptions")
+    exceptions.UserError = type("UserError", (Exception,), {})
+    odoo.exceptions = exceptions
+    with mock.patch.dict(sys.modules, {"odoo": odoo, "odoo.exceptions": exceptions}):
         spec = importlib.util.spec_from_file_location(name, MODELS / filename)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     return module
+
+
+class _Anything:
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: None
 
 
 class Company:
@@ -116,6 +126,12 @@ class RenderTests(unittest.TestCase):
                                                           model="account.move"), [1])
         self.assertEqual(calls, [("standard", [1])])  # rendered once, with the report asked for
 
+    def test_standard_pdf_without_payment_is_rendered_with_ours_too(self):
+        moves = [Move(1, company=self.llc)]
+        (streams, kind), calls = self.render(moves, Report("PDF without Payment", report_name="account.report_invoice",
+                                                          model="account.move"), [1])
+        self.assertEqual(calls, [("sf_connector.report_sf_invoice_llc", [1])])
+
     def test_other_reports_are_left_to_odoo(self):
         moves = [Move(1, company=self.llc)]
         (streams, kind), calls = self.render(moves, Report("payment receipt", report_name="account.report_payment_receipt",
@@ -150,11 +166,43 @@ class DefaultReportTests(unittest.TestCase):
         self.assertEqual(self.send(Move(2, move_type="out_refund", company=Company(1, "llc"))),
                          "OURS:sf_connector.report_sf_invoice_llc")
 
-    def test_partner_explicit_choice_wins(self):
-        self.assertEqual(self.send(Move(3, company=self.company, partner_choice="PARTNER")), "PARTNER")
+    def test_partner_template_is_ignored_for_customer_documents(self):
+        self.assertEqual(self.send(Move(3, company=self.company, partner_choice="PARTNER")),
+                         "OURS:sf_connector.report_sf_invoice_gamma")
+
+    def test_partner_standard_layout_is_ignored_too(self):
+        self.assertEqual(self.send(Move(5, company=Company(1, "llc"), partner_choice="Invoice PDF")),
+                         "OURS:sf_connector.report_sf_invoice_llc")
 
     def test_bills_keep_odoos_default(self):
         self.assertEqual(self.send(Move(4, move_type="in_invoice", company=self.company)), "STANDARD")
+
+
+class WizardChoiceTests(unittest.TestCase):
+    """The Send wizard's choices: Odoo's standard layouts are removed for customer documents only."""
+
+    class Reports(list):
+        def filtered(self, function):
+            return WizardChoiceTests.Reports([r for r in self if function(r)])
+
+    def setUp(self):
+        self.module = load("account_move_under_test", "account_move.py", object)
+
+    def choices(self, moves):
+        reports = self.Reports([Report("Invoice PDF", "account.report_invoice_with_payments"),
+                                Report("PDF without Payment", "account.report_invoice"),
+                                Report("Original Bills", "account.report_original_vendor_bill")])
+        return [r.report_name for r in self.module.sf_without_standard_reports(reports, moves)]
+
+    def test_customer_documents_get_no_standard_layout(self):
+        self.assertEqual(self.choices([Move(1)]), ["account.report_original_vendor_bill"])
+        self.assertEqual(self.choices([Move(1, move_type="out_refund")]), ["account.report_original_vendor_bill"])
+
+    def test_bills_keep_odoos_choices(self):
+        self.assertEqual(len(self.choices([Move(1, move_type="in_invoice")])), 3)
+
+    def test_mixed_selection_keeps_odoos_choices(self):
+        self.assertEqual(len(self.choices([Move(1), Move(2, move_type="in_invoice")])), 3)
 
 
 if __name__ == "__main__":

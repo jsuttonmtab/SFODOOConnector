@@ -8,6 +8,16 @@ from odoo.exceptions import UserError
 
 # Customer invoices and credit notes: the documents the connector attaches to Salesforce (docs/field-mapping.md §5.2).
 SF_PDF_TYPES = ('out_invoice', 'out_refund')
+# Odoo's standard invoice layouts, which the Send wizard offers and Print can use. Customer documents never get them.
+STANDARD_INVOICE_TEMPLATES = ('account.report_invoice_with_payments', 'account.report_invoice')
+
+
+def sf_without_standard_reports(reports, moves):
+    """The report choices for these moves, without Odoo's standard invoice layouts when they are all customer documents
+    (out_invoice or out_refund). Mixed or other documents keep the choices Odoo gives them."""
+    if moves and all(move.move_type in SF_PDF_TYPES for move in moves):
+        return reports.filtered(lambda report: report.report_name not in STANDARD_INVOICE_TEMPLATES)
+    return reports
 
 # Company fields that change the printed invoice. A change to any of them makes the connector re-render the invoice
 # (sf_render_keys). Keep this list in step with report/report_invoice.xml.
@@ -53,6 +63,10 @@ class AccountMove(models.Model):
         self.ensure_one()
         return ('sf_connector.report_sf_invoice_gamma' if self.company_id.sf_invoice_layout == 'gamma'
                 else 'sf_connector.report_sf_invoice_llc')
+
+    def _get_available_action_reports(self, is_invoice_report=True):
+        return sf_without_standard_reports(
+            super()._get_available_action_reports(is_invoice_report=is_invoice_report), self)
 
     def sf_format_date(self, value):
         """A date as the invoice prints it, e.g. "1 May 2026" (day without a leading zero)."""

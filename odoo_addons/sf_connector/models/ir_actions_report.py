@@ -10,7 +10,8 @@ from odoo import models
 
 SF_PDF_TYPES = ('out_invoice', 'out_refund')
 SF_TEMPLATE = 'sf_connector.report_sf_invoice'
-ACCOUNT_INVOICE_TEMPLATE = 'account.report_invoice_with_payments'
+# Odoo's standard invoice layouts: "Invoice PDF" (with payments) and "PDF without Payment". Never used for customer documents.
+STANDARD_INVOICE_TEMPLATES = ('account.report_invoice_with_payments', 'account.report_invoice')
 
 
 class IrActionsReport(models.Model):
@@ -19,7 +20,7 @@ class IrActionsReport(models.Model):
     def _pre_render_qweb_pdf(self, report_ref, res_ids=None, data=None):
         report = self._get_report(report_ref)
         moves = self.env['account.move'].browse(res_ids) if res_ids else self.env['account.move']
-        if (report.model != 'account.move' or report.report_name not in (SF_TEMPLATE, ACCOUNT_INVOICE_TEMPLATE)
+        if (report.model != 'account.move' or report.report_name not in (SF_TEMPLATE,) + STANDARD_INVOICE_TEMPLATES
                 or not moves or any(move.move_type not in SF_PDF_TYPES for move in moves)):
             return super()._pre_render_qweb_pdf(report_ref, res_ids=res_ids, data=data)
 

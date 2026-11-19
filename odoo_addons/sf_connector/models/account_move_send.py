@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Which PDF an invoice gets when it is printed, sent, or saved after sending (Print, the Send wizard, invoice_pdf_report_id).
+"""Which PDF a customer invoice or credit note gets when it is printed, sent, or saved after sending (Print, the Send
+wizard, invoice_pdf_report_id): always the company's own report (mTab LLC: US Letter; G.A.M.M.A: A4).
 
-Odoo's default is the partner's template, then the journal's, then the standard "Invoice PDF". For a customer invoice or
-credit note this module puts the company's own layout (mTab LLC: US Letter; G.A.M.M.A: A4) in place of the standard one:
-a partner's explicit choice of template still wins. The journal's template is not used for these documents.
+A partner's invoice_template_pdf_report_id is ignored for these documents, even when the Send wizard saved it. The
+standard Odoo layouts are never used for them (see ir_actions_report.py and the wizard's choices in account_move.py).
+Other documents (bills, payments) keep Odoo's own default.
 """
 from odoo import api, models
 
@@ -15,9 +16,6 @@ class AccountMoveSend(models.AbstractModel):
 
     @api.model
     def _get_default_pdf_report_id(self, move):
-        partner_choice = move.commercial_partner_id.with_company(move.company_id).invoice_template_pdf_report_id
-        if partner_choice:
-            return partner_choice
         if move.move_type in SF_PDF_TYPES and move.company_id:
             return self.env.ref(move._sf_invoice_report_xmlid())
         return super()._get_default_pdf_report_id(move)
