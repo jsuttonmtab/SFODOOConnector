@@ -419,3 +419,14 @@ exists only after the upgrade.
    held together. Deliverables get the same text through the mTab module (it copies `sf_combined_description`), not
    from this connector.
 
+## Upgrade to sf_connector 19.0.1.8.12 (invoice titles, invoice line descriptions)
+
+1. Odoo: Apps → sf_connector → **Upgrade**. The migration `19.0.1.8.12/post-migrate.py` fills the empty description copies
+   on existing invoice lines from their sale lines (5 lines expected on the sandbox, mTab LLC). It returns the count.
+   The upgrade also adds the "Item Description" column on the invoice form. Check that the column appears on a draft
+   invoice; if the view fails to load, fix its XPath in `views/account_move_views.xml`.
+2. Check the mTab LLC invoice that had empty copies: it now prints its brackets. A posted line must accept the write; if
+   the migration reports an error on a posted line, tell the developer (the write is to a custom field only).
+3. `git pull --ff-only`. Invoice titles and the early-payment rule apply to the next print or PDF. Connector PDFs
+   re-render because the render key changed.
+

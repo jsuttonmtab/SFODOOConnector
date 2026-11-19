@@ -112,7 +112,7 @@
                             <img t-if="c.logo" t-att-src="image_data_uri(c.logo)" style="max-height: 80px;" alt="Logo"/>
                         </td>
                         <td style="width: 36%;">
-                            <div class="sf-title">Invoice <strong t-esc="o.name"/></div>
+                            <div class="sf-title"><span t-esc="o.sf_document_title()"/> <strong t-esc="o.name"/></div>
                             <div t-if="gamma and c.sf_trading_name" style="margin-top: 22px;" t-esc="c.sf_trading_name"/>
                         </td>
                         <td style="width: 36%;">

@@ -112,10 +112,35 @@ class AccountMove(models.Model):
             company.country_id.code if company.country_id else '') if part)
         return ', '.join(part for part in (company.city or '', region) if part)
 
+    def sf_document_title(self):
+        """The title printed before the number: "Invoice" or "Credit Note", with "Draft " in front for a draft, so a
+        draft cannot pass as a real invoice."""
+        self.ensure_one()
+        title = 'Credit Note' if self.move_type == 'out_refund' else 'Invoice'
+        return f"Draft {title}" if self.state == 'draft' else title
+
+    def action_post(self):
+        """Before posting, copy the Salesforce description from the sale line to each invoice line whose copy is empty.
+        A draft made before the description reached the sale line then prints it."""
+        self._sf_fill_description_copies()
+        return super().action_post()
+
+    def _sf_fill_description_copies(self):
+        for move in self:
+            for line in move.invoice_line_ids:
+                if line.display_type != 'product' or line.sf_combined_description:
+                    continue
+                sale = line.sale_line_ids[:1]
+                if sale and sale.sf_combined_description:
+                    line.sf_combined_description = sale.sf_combined_description
+
     def sf_early_payment_offers(self):
         """The early payment offers printed under the invoice total: [{date, percent, amount}]. Display only:
-        no accounting entries are made. Days and percentages come from the company (Settings → Companies)."""
+        no accounting entries are made. Days and percentages come from the company (Settings → Companies).
+        Credit notes have none."""
         self.ensure_one()
+        if self.move_type != 'out_invoice':
+            return []
         company = self.company_id
         offers = []
         for days, percent in ((company.sf_epd_days_1, company.sf_epd_percent_1),

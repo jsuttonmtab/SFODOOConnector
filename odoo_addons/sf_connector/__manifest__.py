@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Salesforce Connector Fields',
-    'version': '19.0.1.8.11',
+    'version': '19.0.1.8.12',
     'summary': 'Salesforce ID and mapped fields for customers, orders and order lines',
     'description': """
 Adds the sf_* fields used by the Salesforce -> Odoo connector.
@@ -15,6 +15,7 @@ See docs/field-mapping.md, section 6.
         'data/payment_terms.xml',
         'views/res_partner_views.xml',
         'views/sale_order_views.xml',
+        'views/account_move_views.xml',
         'views/sale_order_list_search_views.xml',
         'views/product_template_views.xml',
         'views/res_company_views.xml',
