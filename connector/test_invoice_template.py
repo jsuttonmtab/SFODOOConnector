@@ -43,8 +43,8 @@ class InvoiceTemplateTests(unittest.TestCase):
         missing = []
         for expr in self.expressions:
             for var, field in PATH.findall(expr):
-                if var == "o" and f"o.{field}(" in expr:
-                    continue  # a method call (sf_...()), checked by test_helper_methods...
+                if f"{var}.{field}(" in expr:
+                    continue  # a method call (sf_...()), checked by the helper tests
                 if field not in FIELDS[VARIABLES[var]]:
                     missing.append((VARIABLES[var], field, expr[:70]))
         self.assertEqual(missing, [], f"the template reads fields Odoo does not have: {missing}")
@@ -216,15 +216,15 @@ class CombinedDescriptionTests(unittest.TestCase):
     def setUp(self):
         self.text = TEMPLATE.read_text(encoding="utf-8")
 
-    def test_description_is_trimmed_before_the_brackets(self):
-        self.assertIn("t-set=\"sf_desc\" t-value=\"(line.sf_combined_description or '').strip()\"", self.text)
-        self.assertIn('<t t-if="sf_desc"> <i>(<span t-esc="sf_desc"/>)</i></t>', self.text)
+    def test_description_comes_from_the_name_helper_and_is_trimmed_there(self):
+        self.assertIn('<t t-set="sf_item" t-value="line.sf_item_text()"/>', self.text)
+        self.assertIn('<t t-if="sf_item[1]"><t t-if="sf_item[0]"> </t><i>(<span t-esc="sf_item[1]"/>)</i></t>', self.text)
 
-    def test_brackets_are_printed_from_the_trimmed_value_only(self):
-        # The brackets and the value both come from sf_desc, so an empty or spaces-only description prints nothing.
-        self.assertEqual(self.text.count("sf_desc"), 3)
+    def test_line_text_is_printed_once_for_both_layouts(self):
+        # One line cell in the document, shared by mTab LLC and G.A.M.M.A (no duplicate in a layout branch).
+        self.assertEqual(self.text.count("line.sf_item_text()"), 1)
+        self.assertNotIn('t-field="line.name"', self.text)
         self.assertNotIn('t-if="line.sf_combined_description"', self.text)
-        self.assertNotIn('t-esc="line.sf_combined_description"', self.text)
 
 
 class WebsiteHelperTests(unittest.TestCase):

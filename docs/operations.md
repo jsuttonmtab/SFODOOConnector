@@ -449,3 +449,13 @@ exists only after the upgrade.
 - **Upgrade:** after upgrading the module, check one Print, one Send (to a test address) and one multi-select print with
   invoices from both companies. The Send wizard offers no standard layout for customer documents.
 
+## Upgrade to sf_connector 19.0.1.8.13 (invoice line text)
+
+1. Odoo: Apps → sf_connector → **Upgrade**. No migration. The template changed; the render key changes too, so each sent
+   invoice is rendered again on its next run (its Salesforce attachment is replaced in place).
+2. Check an invoice made before 19.0.1.8.0 (for example S00480's invoice): each line shows its description once, in
+   brackets. A line edited by hand prints as written.
+3. Lines flagged information only are not printed. The two $0 "Data Conversion - Syndicated Database" lines on S00480 are
+   **not** flagged (`sf_information_only` is False), so they print as ordinary $0 lines. Flag them in Salesforce if they
+   should be hidden.
+
