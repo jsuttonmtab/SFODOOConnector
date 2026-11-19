@@ -436,13 +436,16 @@ exists only after the upgrade.
   (`invoice_pdf_report_id`) is the same PDF.
 - **Print of several invoices** from the list: one download. Each invoice is printed with its own company's layout,
   and Odoo merges them in the order selected.
-- **Partner template:** a partner's explicit choice of template in Odoo wins over the company layout. Odoo's Send wizard
-  saves the chosen template on the partner when it differs from the default, so choosing the standard "Invoice PDF" once
-  makes it the partner's choice for good. Clear it on the partner (Invoicing tab → Invoice template) to go back to the
-  company layout.
+- **Company layout always:** customer invoices and credit notes print with their company's layout, whatever the
+  partner's invoice template says. A partner's template is ignored for them, even if the Send wizard saved one.
+- **Odoo's standard layouts are never used** for customer invoices and credit notes: neither "Invoice PDF" nor "PDF
+  without Payment". The Send wizard does not offer them for these documents. Bills and other documents keep Odoo's
+  choices.
+- **Partner template field:** `invoice_template_pdf_report_id` on a partner has no effect on customer invoices or credit
+  notes. A value the Send wizard saved earlier is harmless and can be cleared.
 - **Journal template:** not used for customer invoices and credit notes; the company layout applies.
 - **Credit notes** print as "Credit Note" with no early-payment box. **Drafts** print as "Draft Invoice" / "Draft Credit
   Note".
 - **Upgrade:** after upgrading the module, check one Print, one Send (to a test address) and one multi-select print with
-  invoices from both companies. The Send wizard's PDF selector stays hidden when only the company layout is offered.
+  invoices from both companies. The Send wizard offers no standard layout for customer documents.
 
