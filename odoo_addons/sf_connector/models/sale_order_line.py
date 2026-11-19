@@ -68,6 +68,11 @@ class SaleOrderLine(models.Model):
         string='Combined Product Description',
         help='Salesforce Combined_Product_Description__c. Read-only in Odoo: the connector writes it.',
     )
+    # Salesforce Study_Notes_Additional_Description__c. Line only: the Delivery Tracker does not read it.
+    sf_study_notes = fields.Text(
+        string='Study Notes',
+        help='Salesforce Study_Notes_Additional_Description__c. Read-only in Odoo: the connector writes it.',
+    )
 
     _sf_line_id_unique = models.Constraint(
         'UNIQUE(sf_line_id)',

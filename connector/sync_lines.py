@@ -29,10 +29,25 @@ LINE_FIELDS = [
     "sf_billing_schedule", "year_of_study", "country_region", "version", "item_description",
     "sf_data_vendor", "sf_coverage_period", "sf_study_type", "sf_study_name", "sf_wave_period",
     "sf_delivery", "sf_is_upsell", "sf_information_only", "sf_on_hold", "sf_term_start_date",
-    "sf_term_end_date", "sf_combined_description",
+    "sf_term_end_date", "sf_combined_description", "sf_study_notes",
 ]
 
 LINE_M2O = {"product_id"}
+# The Salesforce description is written to two Odoo fields in the same call: sf_combined_description (the invoice and
+# the Study Name rules use it) and item_description (the order line's Item Description, which the Delivery Tracker
+# reads through the deliverables). They always carry the same value, so the hold and the lock below act on both.
+MIRRORED = ("sf_combined_description", "item_description")
+
+
+def description_vals(sf_line):
+    """The description fields for one Salesforce line. Combined_Product_Description__c goes to sf_combined_description
+    and, unchanged, to item_description. Study_Notes_Additional_Description__c goes to sf_study_notes (line only)."""
+    combined = text(sf_line.get("Combined_Product_Description__c")) or False
+    return {
+        "sf_combined_description": combined,
+        "item_description": combined,
+        "sf_study_notes": text(sf_line.get("Study_Notes_Additional_Description__c")) or False,
+    }
 DELIVERY_MAP = {"Classic": "classic", "Halo": "halo", "Both": "both"}
 # §3: the billing schedule default is a placeholder, treated as empty.
 BILLING_PLACEHOLDERS = {"Prepopulated on Save", "This will prepopulate on save"}
@@ -62,12 +77,14 @@ def fetch_sf_lines(sf, opp_ids):
 
 def hold_name_changes(changes):
     """Split the line changes into (to write, held). With SF_HOLD_NAME_UPDATES true, a change to the Salesforce
-    description (sf_combined_description, the line's Combined_Product_Description__c) is held: it is returned in held,
-    for the log, and is not written to Odoo. Other changes are unaffected."""
-    if not config.SF_HOLD_NAME_UPDATES:
+    description is held: sf_combined_description and item_description together (MIRRORED), so the line, the invoice and
+    the Delivery Tracker keep the same text. Held changes are returned for the log and not written. A change to
+    item_description alone (the two already differ in Odoo) is not held: it brings item_description into line with
+    sf_combined_description. Other changes are unaffected."""
+    if not config.SF_HOLD_NAME_UPDATES or not any(change[0] == "sf_combined_description" for change in changes):
         return changes, []
-    held = [change for change in changes if change[0] == "sf_combined_description"]
-    return [change for change in changes if change[0] != "sf_combined_description"], held
+    held = [change for change in changes if change[0] in MIRRORED]
+    return [change for change in changes if change[0] not in MIRRORED], held
 
 
 class LineSync:
@@ -246,14 +263,13 @@ class LineSync:
         vals = {
             "product_id": product_id,
             "name": name,
-            "sf_combined_description": combined,
             "product_uom_qty": float(sf_line.get("Quantity") or 0),
             "price_unit": 0.0 if info_only else float(sf_line.get("Total_Billable_Amount__c") or 0),
             "discount": 0.0,
             "year_of_study": text(sf_line.get("Year_of_Study__c")),
             "country_region": text(sf_line.get("Country_Region__c")),
             "version": text(sf_line.get("Version__c")),
-            "item_description": text(sf_line.get("Study_Notes_Additional_Description__c")),
+            **description_vals(sf_line),
             "sf_data_vendor": text(sf_line.get("Data_Vendor_netnew__c")),
             "sf_coverage_period": text(sf_line.get("Coverage_Period__c")),
             "sf_study_type": text(sf_line.get("StudyType__c")),
@@ -297,6 +313,7 @@ class LineSync:
             reject("name", "line is delivered or invoiced")
         if (delivered or invoiced) and changes("sf_combined_description") and not config.SF_HOLD_NAME_UPDATES:
             vals.pop("sf_combined_description", None)
+            vals.pop("item_description", None)  # mirrors the description: locked with it
             self.parent.warn("description not updated (line is delivered or invoiced)",
                              f"line {sf_line['Id']} on {opp['Id']} {opp['Name']}")
 
@@ -413,7 +430,9 @@ class LineSync:
                 self.line_error(opp, sf_line, f"{message} (not applied)")
             self.apply_locks(rec, vals, opp, sf_line)
             changes, held = hold_name_changes(diff(rec, vals, LINE_M2O))
-            for _, current, wanted in held:
+            for field, current, wanted in held:
+                if field != "sf_combined_description":
+                    continue  # item_description is held with it: counted and logged once
                 self.counts["names_held"] += 1
                 print(f"description held (SF_HOLD_NAME_UPDATES) line {sf_id} on {opp['Id']} {opp['Name']}: "
                       f"{show(current)} -> {show(wanted)}")

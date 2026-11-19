@@ -52,6 +52,7 @@
                 <field name="sf_term_start_date" readonly="1" optional="hide"/>
                 <field name="sf_term_end_date" readonly="1" optional="hide"/>
                 <field name="sf_billing_schedule" readonly="1" optional="hide"/>
+                <field name="sf_study_notes" readonly="1" optional="hide"/>
             </xpath>
         </field>
     </record>

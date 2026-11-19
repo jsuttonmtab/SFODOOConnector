@@ -401,3 +401,21 @@ in the deployed metadata. After a refresh, expect:
    run, and its attachment in Salesforce is replaced in place (one replacement per invoice, no duplicates).
 4. `SF_INVOICE_PDF=true` now works with `SF_WRITEBACK=false`. Its Salesforce writes are Attachments only.
 5. Cron: change `*/15` to `*/5` (see *Cron*).
+
+## Upgrade to sf_connector 19.0.1.8.11 (Item Description mirrors the Salesforce description)
+
+Order matters: upgrade the Odoo module **first**, then pull the code. The sync now reads `sf_study_notes`, which
+exists only after the upgrade.
+
+1. Odoo: Apps → sf_connector → **Upgrade**. The migration `19.0.1.8.11/post-migrate.py` runs once. It copies
+   `sf_combined_description` to `item_description` on every synced line, including delivered and invoiced lines
+   (display only). Expect about **4,531** lines changed on the sandbox (8 of them delivered or invoiced). The upgrade
+   log does not print the count, so check it with: `search_count([('sf_line_id','!=',False)])` and compare
+   `item_description` with `sf_combined_description` on those lines.
+2. `git pull --ff-only`, then `python3 -m connector.check_connections`.
+3. Refresh the wrapper if `deploy/run_sync.sh` changed (see *Installing the wrapper*).
+4. The next run writes `sf_study_notes` on each line (not locked). `item_description` follows
+   `sf_combined_description`: a description change is held when `SF_HOLD_NAME_UPDATES=true`, and both fields are
+   held together. Deliverables get the same text through the mTab module (it copies `sf_combined_description`), not
+   from this connector.
+
