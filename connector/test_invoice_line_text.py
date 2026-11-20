@@ -1,6 +1,7 @@
-"""The invoice line text: an old-format line (name = product + description, before 19.0.1.8.0) does not print the
-description twice; a new-format line prints as before; a hand-edited line prints as Finance wrote it. The model is loaded
-against a stand-in for odoo; no Odoo needed.
+"""The invoice line text: the line text and the Salesforce description are printed once when they are the same (ignoring
+case, extra spaces and surrounding brackets); an old-format line (name = product + description, before 19.0.1.8.0) does not
+print the description twice; a different description prints after the product name in brackets; a hand-edited line prints as
+written. The model is loaded against a stand-in for odoo; no Odoo needed.
 
 Run from the repo root:  python -m unittest connector.test_invoice_line_text
 """
@@ -13,6 +14,9 @@ from unittest import mock
 
 MODEL = Path(__file__).resolve().parent.parent / "odoo_addons" / "sf_connector" / "models" / "account_move_line.py"
 DESC = "2026 USA Market Potential Study"
+PRODUCT = "Halo User Seat - Creator"
+HALO = "Halo User Seat - Creator (3 seats)"
+DATA_CONVERSION = "Data Conversion - Proprietary Database"
 
 
 class _Anything:
@@ -31,36 +35,54 @@ def load_line_model():
     return module.AccountMoveLine
 
 
+class Product:
+    def __init__(self, name):
+        self.name = name
+
+
 class Line:
-    def __init__(self, name, description):
+    def __init__(self, name, description, product=""):
         self.name = name
         self.sf_combined_description = description
+        self.product_id = Product(product) if product else False
 
 
 class LineTextTests(unittest.TestCase):
     def setUp(self):
         self.AccountMoveLine = load_line_model()
 
-    def text(self, name, description):
-        return self.AccountMoveLine.sf_item_text(Line(name, description))
+    def text(self, name, description, product=""):
+        return self.AccountMoveLine.sf_item_text(Line(name, description, product))
 
-    def test_old_format_name_that_is_the_description_prints_it_once(self):
-        name = "Halo User Seat - Creator (3 seats)"
-        self.assertEqual(self.text(name, name), ("", name))
+    def test_identical_text_prints_once_as_plain_text(self):
+        self.assertEqual(self.text(HALO, HALO, PRODUCT), (HALO, ""))
 
-    def test_old_format_product_plus_description_keeps_only_the_product(self):
-        name = "Data Conversion - Proprietary Database\n" + DESC
-        self.assertEqual(self.text(name, DESC), ("Data Conversion - Proprietary Database", DESC))
+    def test_identical_ignoring_case_spaces_and_brackets_prints_once(self):
+        self.assertEqual(self.text("halo  user seat - creator (3 seats)", "(Halo User Seat - Creator (3 seats))", PRODUCT),
+                         ("halo  user seat - creator (3 seats)", ""))
 
-    def test_new_format_line_prints_as_before(self):
-        self.assertEqual(self.text("Data Access", DESC), ("Data Access", DESC))
+    def test_old_format_name_that_is_the_whole_description_prints_it_once(self):
+        # The description was the whole old-format name: stripping it leaves nothing, so the description prints plain.
+        self.assertEqual(self.text(HALO, HALO), (HALO, ""))
+        self.assertEqual(self.text("\n" + HALO, HALO, PRODUCT), (HALO, ""))
 
-    def test_hand_edited_line_prints_as_written(self):
-        self.assertEqual(self.text("Custom wording for Finance", DESC), ("Custom wording for Finance", DESC))
+    def test_description_equal_to_the_product_name_prints_the_name_once(self):
+        name = DATA_CONVERSION + "\n" + DATA_CONVERSION
+        self.assertEqual(self.text(name, DATA_CONVERSION, DATA_CONVERSION), (DATA_CONVERSION, ""))
+
+    def test_different_description_prints_product_then_bracketed_description(self):
+        name = DATA_CONVERSION + "\n" + DESC
+        self.assertEqual(self.text(name, DESC, DATA_CONVERSION), (DATA_CONVERSION, DESC))
+
+    def test_new_format_line_with_a_different_description_prints_as_before(self):
+        self.assertEqual(self.text("Data Access", DESC, "Data Access"), ("Data Access", DESC))
+
+    def test_hand_edited_line_prints_as_written_with_the_description(self):
+        self.assertEqual(self.text("Custom wording for Finance", DESC, PRODUCT),
+                         ("Custom wording for Finance", DESC))
 
     def test_description_inside_the_name_is_removed_and_trimmed(self):
-        self.assertEqual(self.text("Product 2026 USA Market Potential Study edited", DESC),
-                         ("Product  edited", DESC))
+        self.assertEqual(self.text("Product " + DESC + " edited", DESC), ("Product  edited", DESC))
 
     def test_no_description_prints_the_name_only(self):
         self.assertEqual(self.text("Data Access", False), ("Data Access", ""))

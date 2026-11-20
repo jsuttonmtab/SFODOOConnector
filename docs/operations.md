@@ -459,3 +459,10 @@ exists only after the upgrade.
    **not** flagged (`sf_information_only` is False), so they print as ordinary $0 lines. Flag them in Salesforce if they
    should be hidden.
 
+## Upgrade to sf_connector 19.0.1.8.14 (plain text for the same line and description)
+
+1. Odoo: Apps → sf_connector → **Upgrade**. No migration. Invoices re-render on their next send (render key changes).
+2. Check that a line whose text is the same as its Salesforce description (for example "Halo User Seat - Creator (3 seats)")
+   prints once, as plain text, with no brackets or italics. A line with a different description still prints the product
+   name, then the description in brackets.
+
