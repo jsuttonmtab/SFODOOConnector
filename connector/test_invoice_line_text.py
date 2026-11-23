@@ -1,7 +1,7 @@
 """The invoice line text: the line text and the Salesforce description are printed once when they are the same (ignoring
 case, extra spaces and surrounding brackets); an old-format line (name = product + description, before 19.0.1.8.0) does not
-print the description twice; a different description prints after the product name in brackets; a hand-edited line prints as
-written. The model is loaded against a stand-in for odoo; no Odoo needed.
+print the description twice; a different description prints on a second line under the product name, in italics, without
+brackets; a hand-edited line prints as written. The model is loaded against a stand-in for odoo; no Odoo needed.
 
 Run from the repo root:  python -m unittest connector.test_invoice_line_text
 """
@@ -70,7 +70,7 @@ class LineTextTests(unittest.TestCase):
         name = DATA_CONVERSION + "\n" + DATA_CONVERSION
         self.assertEqual(self.text(name, DATA_CONVERSION, DATA_CONVERSION), (DATA_CONVERSION, ""))
 
-    def test_different_description_prints_product_then_bracketed_description(self):
+    def test_different_description_prints_product_then_description_on_its_own_line(self):
         name = DATA_CONVERSION + "\n" + DESC
         self.assertEqual(self.text(name, DESC, DATA_CONVERSION), (DATA_CONVERSION, DESC))
 

@@ -218,7 +218,29 @@ class CombinedDescriptionTests(unittest.TestCase):
 
     def test_description_comes_from_the_name_helper_and_is_trimmed_there(self):
         self.assertIn('<t t-set="sf_item" t-value="line.sf_item_text()"/>', self.text)
-        self.assertIn('<t t-if="sf_item[1]"><t t-if="sf_item[0]"> </t><i>(<span t-esc="sf_item[1]"/>)</i></t>', self.text)
+        self.assertIn('<t t-if="sf_item[1]"><br/><i><span t-esc="sf_item[1]"/></i></t>', self.text)
+
+    def test_description_is_on_its_own_line_in_italics_without_brackets(self):
+        cell = re.search(r'<t t-set="sf_item".*?</td>', self.text, re.S).group(0)
+        self.assertIn('<span t-esc="sf_item[0]"/>', cell)  # line 1: the product or line text, as before
+        self.assertIn('<br/><i><span t-esc="sf_item[1]"/></i>', cell)  # line 2: the description, italic
+        self.assertNotIn("(<span", cell)  # no brackets around the description
+        self.assertNotIn("font-size", cell)  # same size as the body: no smaller style on line 2
+
+    def test_amount_cells_are_top_aligned_so_they_sit_on_line_one(self):
+        self.assertIn(".sf-inv td, .sf-inv th { padding: 2px 4px; vertical-align: top; }", self.text)
+        rows = re.findall(r"<tr t-foreach=\"lines\".*?</tr>", self.text, re.S)
+        self.assertEqual(len(rows), 1)
+        # Item cell, then the LLC amount cells (two) and the G.A.M.M.A amount cell (one): both branches share the row.
+        self.assertEqual(rows[0].count("<td"), 4)
+        self.assertNotIn("vertical-align: middle", rows[0])
+        self.assertNotIn("vertical-align: bottom", rows[0])
+
+    def test_line_rows_never_split_across_pages(self):
+        # Taller rows (two-line text) must still move whole to the next page.
+        self.assertIn(".sf-inv tr { page-break-inside: avoid; }", self.text)
+        self.assertNotIn("page-break-inside: auto", self.text)
+        self.assertIn('<thead style="display: table-header-group;">', self.text)  # header repeats on the next page
 
     def test_line_text_is_printed_once_for_both_layouts(self):
         # One line cell in the document, shared by mTab LLC and G.A.M.M.A (no duplicate in a layout branch).

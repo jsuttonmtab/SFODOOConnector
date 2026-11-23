@@ -174,7 +174,8 @@
                 </table>
                 <div style="border-bottom: 2px solid #4aa3e8; margin-top: 12px;"/>
 
-                <!-- Lines: product name, then the Salesforce description in italics in brackets -->
+                <!-- Lines: product name on the first line; the Salesforce description, when it differs, in italics on a second
+                     line of the same cell (same size, no brackets). The amounts are top-aligned, so they sit on the first line. -->
                 <table style="width: 100%; margin-top: 10px;">
                     <thead style="display: table-header-group;">
                         <tr>
@@ -191,7 +192,7 @@
                     <tbody>
                         <tr t-foreach="lines" t-as="line" t-att-style="None if gamma else 'border-top: 1px solid #e3e8ee;'">
                             <td style="padding: 8px 4px;">
-                                <t t-set="sf_item" t-value="line.sf_item_text()"/><span t-esc="sf_item[0]"/><t t-if="sf_item[1]"><t t-if="sf_item[0]"> </t><i>(<span t-esc="sf_item[1]"/>)</i></t>
+                                <t t-set="sf_item" t-value="line.sf_item_text()"/><span t-esc="sf_item[0]"/><t t-if="sf_item[1]"><br/><i><span t-esc="sf_item[1]"/></i></t>
                             </td>
                             <t t-if="not gamma">
                                 <td style="text-align: right; padding: 8px 4px;">

@@ -589,6 +589,7 @@ sf data query --query "SELECT ContentDocument.Title, ContentDocument.FileExtensi
 | 2026-10-28 | Source Document shown as "Sales Order Name" in the order views (label only, field not renamed) | Finance |
 | 2026-11-17 | Information-only lines stay on the order and are invoiced at 0, but are not printed on the invoice or the quotation/sales order PDF. They still create deliverables | Finance and Salesforce admin (test session) |
 | 2026-11-17 | The Salesforce description (Combined_Product_Description__c) is its own field, sf_combined_description. The line name is the product name only, so the product appears once; the description is printed after it | Finance and Salesforce admin (test session) |
+| 2026-11-23 | Invoice lines: the Salesforce description (when it differs from the line text) prints on a second line under the product name, in italics, same size, no brackets. Amounts stay on the first line; rows still never split across pages | Finance |
 | 2026-11-19 | Invoice line text: when the line text and the Salesforce description are the same (ignoring case, spaces and brackets), or the description is the product name, it prints once as plain text, with no brackets. Otherwise the product name is followed by the description in brackets, as before | Finance
 | 2026-11-19 | Invoice line text: where the name holds the Salesforce description (invoices made before 19.0.1.8.0, "product + description"), the description is removed from the name and printed once, in brackets. A hand-edited name prints as written. The product name is not restored | Finance
 | 2026-11-19 | Print, Send and the saved invoice PDF of customer invoices and credit notes use the company's layout (mTab LLC: Letter; G.A.M.M.A: A4), for both companies. A partner's template is ignored for these documents, and Odoo's standard layouts (Invoice PDF, PDF without Payment) are never used or offered for them. Several invoices print in one download, each with its company's layout. Odoo's standard Invoice PDF is no longer used for these documents | Finance
@@ -603,7 +604,7 @@ One QWeb invoice template (`sf_connector.report_sf_invoice`), two report actions
 on A4. Print and the Salesforce attachment (§5.2) use the company's layout. The template matches the NetSuite
 layouts (`INV001825.pdf`, mTab LLC; `INVG011392.pdf`, G.A.M.M.A).
 
-- Lines: product name, then the Salesforce description in italics in brackets. Information-only lines are skipped.
+- Lines: product name on the first line; the Salesforce description, when it differs, in italics on a second line under it (same size, no brackets). Amounts sit on the first line. Information-only lines are skipped. A row never splits across pages.
   LLC columns: Item, Total cost (the sale order line's subtotal), Amount invoiced (this invoice line). G.A.M.M.A: Item, Amount.
 - Early payment box: "Balance due if paid by <invoice date + days> (-x%)" with the amount. Display only.
 - Per-company settings (Settings → Companies → Invoice Layout): layout, trading name, tax ID, header block, notes,

@@ -18,10 +18,10 @@ class AccountMoveLine(models.Model):
     _inherit = 'account.move.line'
 
     def sf_item_text(self):
-        """(text, description) as the invoice prints them: the text in front, and the Salesforce description in brackets
-        after it. The description is printed in brackets only when it adds something. It is printed as plain text (no
-        brackets, no italics; the second value is empty) when it is the same as the line text or the product name, or
-        when nothing is left of the name once the description is removed.
+        """(text, description) as the invoice prints them: the text on the first line, and the Salesforce description on a
+        second line under it, in italics, without brackets. The description is printed only when it adds something. It is
+        left out (the second value is empty) when it is the same as the line text or the product name, or when nothing is
+        left of the name once the description is removed; the line then prints once, as plain text.
 
         Same means: ignoring case, extra spaces and surrounding brackets. Invoices made before 19.0.1.8.0 keep "product +
         description" in the line name: when the name ends with the description, or contains it, that part is removed and
@@ -49,7 +49,7 @@ class AccountMoveLine(models.Model):
     sf_combined_description = fields.Char(
         string='Combined Product Description',
         copy=False,
-        help='Copied from the sale order line when the invoice is created. Printed after the product name.',
+        help='Copied from the sale order line when the invoice is created. Printed in italics under the product name.',
     )
     sf_information_only = fields.Boolean(
         string='Information Only',

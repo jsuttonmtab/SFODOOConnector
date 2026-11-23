@@ -466,3 +466,10 @@ exists only after the upgrade.
    prints once, as plain text, with no brackets or italics. A line with a different description still prints the product
    name, then the description in brackets.
 
+## Upgrade to sf_connector 19.0.1.8.15 (description on its own line)
+
+1. Odoo: Apps → sf_connector → **Upgrade**. No migration. Invoices re-render on their next send (render key changes).
+2. Check an invoice with a different Salesforce description: the product name is on the first line, and the description is on
+   a second line under it, in italics, the same size, with no brackets. The amount sits on the first line.
+3. Check a long invoice (the 25-line G.A.M.M.A invoice): no row is cut in two at a page break, and the column headings repeat
+   on the next page.
