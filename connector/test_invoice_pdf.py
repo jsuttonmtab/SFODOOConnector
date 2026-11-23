@@ -4,13 +4,15 @@ Run from the repo root:  python -m unittest connector.test_invoice_pdf
 """
 import base64
 import hashlib
+import io
 import re
 import unittest
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest import mock
 
 from connector import config
-from connector.sf_invoices import attachment_name, invoice_targets, write_invoice_pdfs
+from connector.sf_invoices import attachment_name, invoice_targets, render_reason, write_invoice_pdfs
 from connector.test_finance_review import FakeOdoo
 
 OPP_A = "006AAAAAAAAAAAAAAA"
@@ -291,6 +293,116 @@ class InvoicePdfTests(unittest.TestCase):
         odoo = FakeInvoiceOdoo(tables([draft], [order(10, OPP_A)], [line(100, 10)], [inv_line(1000, 700, [100])]),
                                {700: PDF})
         self.assertEqual(invoice_targets(odoo, None, True), {})
+
+
+
+class RenderDecisionTests(unittest.TestCase):
+    """What the connector re-renders, and why (render_reason), and --refresh-pdfs."""
+
+    def setUp(self):
+        patches = [
+            mock.patch.object(config, "SF_WRITEBACK", True),
+            mock.patch.object(config, "SF_INVOICE_PDF", True),
+            mock.patch.object(config, "SF_INVOICE_PDF_REFUNDS", True),
+            mock.patch.object(config, "SF_EXPECTED_ORG_ID", ORG),
+            mock.patch.object(config, "SF_REQUIRE_SANDBOX", True),
+        ]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def one_order(self, move_row):
+        return FakeInvoiceOdoo(tables([move_row], [order(10, OPP_A)], [line(100, 10)],
+                                      [inv_line(1000, move_row["id"], [100])]), {500: PDF})
+
+    def sent_current(self, **kw):
+        """A send recorded after the last change, with the current render key and the same PDF."""
+        return move(500, "INV/2026/00478", write_date=OLD, sent_at=NEW, checksum=hashlib.sha256(PDF).hexdigest(), **kw)
+
+    def attached(self):
+        return FakeOrgSF([{"Id": "00Pa", "ParentId": OPP_A, "Name": NAME, "BodyLength": len(PDF)}])
+
+    def test_cleared_send_fields_render_and_replace_the_attachment(self):
+        # The sent stamp and checksum cleared (the sandbox test): nothing to skip on, so the PDF is rendered and sent.
+        m = move(500, "INV/2026/00478", write_date=OLD, sent_at=None, checksum=None)
+        odoo = self.one_order(m)
+        sf = self.attached()
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(write_invoice_pdfs(sf, odoo, dry_run=False), 0)
+        self.assertEqual(odoo.renders, [500])
+        self.assertEqual(len(sf.sent("PATCH")), 1)
+        self.assertNotIn("unchanged INV", out.getvalue())
+        self.assertIn("render INV-2026-00478.pdf: changed (or never sent) since the last send", out.getvalue())
+
+    def test_skip_needs_the_same_render_key_before_anything_else(self):
+        m = self.sent_current(render_key="render-key-0")  # sent after the last change, but with other settings
+        self.assertEqual(render_reason(m, RENDER_KEY, True),
+                         "module version or company invoice settings changed since the last send")
+
+    def test_reason_says_why_each_invoice_is_rendered_or_skipped(self):
+        cases = [
+            (move(500, "x", render_key=""), "no send recorded with the current settings"),
+            (self.sent_current(render_key="other"), "module version or company invoice settings changed since the last send"),
+            (move(500, "x", write_date=NEW, sent_at=OLD, checksum="c", render_key=RENDER_KEY),
+             "changed (or never sent) since the last send"),
+            (self.sent_current(), None),
+        ]
+        for row, expected in cases:
+            self.assertEqual(render_reason(row, RENDER_KEY, True), expected)
+        self.assertEqual(render_reason(self.sent_current(), RENDER_KEY, False), "not on every opportunity yet")
+        self.assertEqual(render_reason(self.sent_current(), None, True), "Odoo gave no render key")
+        self.assertEqual(render_reason(self.sent_current(), RENDER_KEY, True, refresh=True),
+                         "re-render requested (--refresh-pdfs)")
+
+    def test_unchanged_invoice_is_skipped_and_the_output_says_so(self):
+        odoo = self.one_order(self.sent_current())
+        sf = self.attached()
+        with redirect_stdout(io.StringIO()) as out:
+            write_invoice_pdfs(sf, odoo, dry_run=False)
+        self.assertEqual(odoo.renders, [])
+        self.assertIn("unchanged INV-2026-00478.pdf on " + OPP_A, out.getvalue())
+
+    def test_refresh_renders_and_replaces_even_when_the_send_looks_current(self):
+        odoo = self.one_order(self.sent_current())
+        sf = self.attached()
+        with redirect_stdout(io.StringIO()):
+            failed = write_invoice_pdfs(sf, odoo, dry_run=False, opportunity=OPP_A, refresh=True)
+        self.assertEqual(failed, 0)
+        self.assertEqual(odoo.renders, [500])
+        self.assertEqual(sf.sent("POST"), [])
+        self.assertEqual(len(sf.sent("PATCH")), 1)  # the same attachment, replaced
+        self.assertEqual(odoo.tables["account.move"][0]["sf_pdf_render_key"], RENDER_KEY)
+
+    def test_refresh_attaches_when_the_attachment_is_missing(self):
+        odoo = self.one_order(self.sent_current())
+        sf = FakeOrgSF()
+        with redirect_stdout(io.StringIO()):
+            write_invoice_pdfs(sf, odoo, dry_run=False, opportunity=OPP_A, refresh=True)
+        self.assertEqual(len(sf.sent("POST")), 1)
+        self.assertEqual(sf.sent("PATCH"), [])
+
+    def test_refresh_without_an_opportunity_renders_nothing(self):
+        odoo = self.one_order(self.sent_current())
+        sf = self.attached()
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(write_invoice_pdfs(sf, odoo, dry_run=False, refresh=True), 1)
+        self.assertEqual(odoo.renders, [])
+        self.assertEqual(sf.writes, [])
+        self.assertIn("needs --opportunity", out.getvalue())
+
+    def test_refresh_flag_needs_an_opportunity_on_the_command_line(self):
+        from connector import sync_orders
+        with redirect_stdout(io.StringIO()) as out, mock.patch.object(config, "use_utf8_output"):
+            self.assertEqual(sync_orders.main(["--refresh-pdfs", "--dry-run"]), 1)
+        self.assertIn("--refresh-pdfs needs --opportunity", out.getvalue())
+
+    def test_refresh_dry_run_writes_nothing(self):
+        odoo = self.one_order(self.sent_current())
+        sf = self.attached()
+        with redirect_stdout(io.StringIO()):
+            write_invoice_pdfs(sf, odoo, dry_run=True, opportunity=OPP_A, refresh=True)
+        self.assertEqual(sf.writes, [])
+        self.assertEqual(odoo.tables["account.move"][0]["sf_pdf_sent_at"], NEW)  # not recorded either
 
 
 if __name__ == "__main__":

@@ -9,7 +9,9 @@ Idempotent. An invoice whose PDF was sent since its last change, with the same r
 the report and the company's invoice settings, see account.move sf_render_keys), is skipped without rendering. A
 template or settings change gives a new key, so invoices already sent are rendered again. A rendered PDF whose
 checksum and size match the attachment already on the opportunity is unchanged. A changed PDF replaces the
-attachment of the same name (PATCH on Attachment.Body); it never adds a second one.
+attachment of the same name (PATCH on Attachment.Body); it never adds a second one. The render key is checked before
+anything else, and each render prints its reason (render_reason). refresh (--refresh-pdfs, with --opportunity) renders
+every invoice and replaces its attachment, whatever is stored.
 
 Gate: SF_INVOICE_PDF, plus the sandbox guard (sf_client.check_org). It does not need SF_WRITEBACK. Its only Salesforce
 writes are Attachment records (POST new, PATCH the body of the same name). It never writes an Opportunity, an
@@ -58,6 +60,29 @@ def _sent_since_change(move):
     """True when the PDF was recorded after the invoice last changed (so it need not be rendered again)."""
     sent, changed = _parse(move.get("sf_pdf_sent_at")), _parse(move.get("write_date"))
     return bool(sent and changed and changed <= sent + SENT_TOLERANCE)
+
+
+def render_reason(move, key, on_every_opportunity, refresh=False):
+    """Why the PDF is rendered (and sent) again, or None when it was sent with these settings and is unchanged.
+
+    The render key is checked first: it covers the installed sf_connector version, the report and the company's invoice
+    settings, so a change to any of them renders every invoice again, whatever the invoice's own dates say. Then the
+    send must be recorded after the invoice last changed, and the attachment must be on every opportunity. refresh
+    always renders."""
+    if refresh:
+        return "re-render requested (--refresh-pdfs)"
+    if not key:
+        return "Odoo gave no render key"
+    recorded = move.get("sf_pdf_render_key") or ""
+    if not recorded:
+        return "no send recorded with the current settings"
+    if recorded != key:
+        return "module version or company invoice settings changed since the last send"
+    if not _sent_since_change(move):
+        return "changed (or never sent) since the last send"
+    if not on_every_opportunity:
+        return "not on every opportunity yet"
+    return None
 
 
 def render_keys(odoo, move_ids):
@@ -110,12 +135,18 @@ def _now():
     return datetime.now(timezone.utc).strftime(STAMP)
 
 
-def write_invoice_pdfs(sf, odoo, dry_run, opportunity=None):
+def write_invoice_pdfs(sf, odoo, dry_run, opportunity=None, refresh=False):
     """Attach the posted customer invoices of synced orders to their opportunities. Prints one line per
-    invoice and opportunity and a summary. Returns the number of records that failed (0 if the step was off)."""
+    invoice and opportunity and a summary. Returns the number of records that failed (0 if the step was off).
+
+    refresh: render every invoice again and replace its attachment, even when the stored send looks current. Only
+    for one opportunity (the caller checks; this refuses the rest too)."""
     if not config.SF_INVOICE_PDF:
         print("Invoice PDFs off (SF_INVOICE_PDF is not true): nothing attached")
         return 0
+    if refresh and not opportunity:
+        print("ERROR --refresh-pdfs needs --opportunity: nothing re-rendered")
+        return 1
     counts = Counter()
     failed = []
     try:
@@ -132,11 +163,14 @@ def write_invoice_pdfs(sf, odoo, dry_run, opportunity=None):
         move, opps = targets[move_id]["move"], sorted(targets[move_id]["opps"])
         name = attachment_name(move["name"])
         key = keys.get(str(move_id))
-        if all(attachments.get((opp, name)) for opp in opps) and _sent_since_change(move)                 and key and move.get("sf_pdf_render_key") == key:
+        on_every = all(attachments.get((opp, name)) for opp in opps)
+        reason = render_reason(move, key, on_every, refresh)
+        if reason is None:
             counts["unchanged"] += len(opps)
             for opp in opps:
-                print(f"unchanged {name} on {opp} (sent since the invoice last changed)")
+                print(f"unchanged {name} on {opp} (sent with the current settings since the invoice last changed)")
             continue
+        print(f"render {name}: {reason}")
         try:
             rendered = odoo.call("account.move", "sf_invoice_pdf", ids=[move_id])[0]
         except OdooError as err:
@@ -151,7 +185,7 @@ def write_invoice_pdfs(sf, odoo, dry_run, opportunity=None):
             rows = attachments.get((opp, name), [])
             if not rows:
                 action = "attach"
-            elif move.get("sf_pdf_checksum") == checksum and rows[0]["BodyLength"] == size:
+            elif not refresh and move.get("sf_pdf_checksum") == checksum and rows[0]["BodyLength"] == size:
                 action = "unchanged"
             else:
                 action = "replace"

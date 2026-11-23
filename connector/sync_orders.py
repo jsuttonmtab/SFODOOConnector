@@ -387,6 +387,23 @@ class OrderSync(AccountSync):
                            message_type="comment", subtype_xmlid="mail.mt_note")
         self.counts["back_notes_posted"] += 1
 
+    def keep_current_pricelist(self, existing, vals, problems):
+        """An existing order keeps its pricelist when it is the billing company's own or a shared one, even if the rule
+        would pick another. Only a pricelist that belongs to another company stops the order (problems). A missing
+        current pricelist (none on the order) is left to the rule as before."""
+        current = m2o_id(existing.get("pricelist_id"))
+        if not current:
+            return
+        company_id = m2o_id(vals.get("company_id")) or m2o_id(existing.get("company_id"))
+        other = self.pricelist_of_another_company(current, company_id)
+        vals.pop("pricelist_id", None)
+        problems.pop("pricelist_id", None)
+        if other:
+            problems["pricelist_id"] = (f"order pricelist {existing['pricelist_id'][1]} belongs to {other}, "
+                                        f"not to the order's company")
+        else:
+            vals["pricelist_id"] = current  # locked: unchanged, so nothing to diff
+
     def sync_header(self, opp, existing):
         """Create or update the order header. Returns (ok, order_id). order_id is None for a
         new order in a dry run. When ok is False, the order's lines are not synced."""
@@ -395,6 +412,8 @@ class OrderSync(AccountSync):
         if not partner_id and self.dry_run:
             partner_id = PENDING_PARTNER
         vals, problems = self.order_vals(opp, partner_id)
+        if existing is not None:
+            self.keep_current_pricelist(existing, vals, problems)
 
         # The company and pricelist decide which books the order is in. If either cannot be resolved, the order is
         # not created or changed, and its lines are not synced either (the error is on the opportunity).
@@ -746,9 +765,15 @@ def main(argv=None):
     parser.add_argument("--allow-mass-removal", action="store_true",
                         help="apply the removals the removal brake would skip. Needs --opportunity: use it for "
                              "one opportunity a person has checked")
+    parser.add_argument("--refresh-pdfs", action="store_true",
+                        help="re-render the invoice PDFs of --opportunity and replace their attachments, even when "
+                             "they look sent. Needs --opportunity")
     args = parser.parse_args(argv)
     if args.allow_mass_removal and not args.opportunity:
         print("ERROR --allow-mass-removal needs --opportunity (one opportunity a person has checked)")
+        return 1
+    if args.refresh_pdfs and not args.opportunity:
+        print("ERROR --refresh-pdfs needs --opportunity (one opportunity a person has checked)")
         return 1
 
     unwritten = 0  # Salesforce records the write-back did not write (exit code 4)
@@ -811,7 +836,7 @@ def main(argv=None):
     # After the Odoo side, so a Salesforce problem cannot stop the Odoo sync.
     unwritten += write_opportunities(sf, odoo, args.dry_run, opps, sync.issues, sync.sf_lines)
     # Invoice PDFs of the synced orders (§5.2): after the order write-back, and never a reason to stop the run.
-    write_invoice_pdfs(sf, odoo, args.dry_run, opportunity=args.opportunity)
+    write_invoice_pdfs(sf, odoo, args.dry_run, opportunity=args.opportunity, refresh=args.refresh_pdfs)
     # Exit codes are bits: 2 = run brake (removals skipped), 4 = Salesforce records not written. Both: 6.
     code = 0
     if sync.global_brake:

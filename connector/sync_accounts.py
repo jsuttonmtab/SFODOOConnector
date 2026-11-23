@@ -347,17 +347,28 @@ class AccountSync:
         return candidates[0]["id"]
 
     def order_pricelist(self, code, company_id):
-        """The pricelist for an order: a pricelist in this currency that belongs to the billing company. Only that
-        company's pricelist counts. A shared pricelist or another company's is never used, and none is created.
-        Returns the id, or None when the company has no pricelist in this currency."""
+        """The pricelist for a new order (or one with none): in this currency, the billing company's own pricelist if it
+        has one, otherwise a shared one (no company, e.g. "Default (USD)"). Another company's pricelist is never used,
+        and none is created. Returns the id, or None when neither exists."""
         if not code or not company_id:
             return None
-        owned = [p for p in self.pricelists.get(code, []) if m2o_id(p["company_id"]) == company_id]
-        if not owned:
+        candidates = self.pricelists.get(code, [])
+        usable = [p for p in candidates if m2o_id(p["company_id"]) == company_id]             or [p for p in candidates if not m2o_id(p["company_id"])]
+        if not usable:
             return None
-        if len(owned) > 1:
-            self.warn("multiple pricelists for the company and currency (lowest id used)", code, None)
-        return min(owned, key=lambda p: p["id"])["id"]
+        if len(usable) > 1:
+            self.warn("multiple pricelists for the company or shared (lowest id used)", code, None)
+        return min(usable, key=lambda p: p["id"])["id"]
+
+    def pricelist_of_another_company(self, pricelist_id, company_id):
+        """The name of the company that owns this pricelist when it is not the order's company and not shared, else None.
+        A pricelist not in the loaded list (archived, or no currency) is not known to belong to anyone, so None."""
+        for candidates in self.pricelists.values():
+            for p in candidates:
+                if p["id"] == pricelist_id:
+                    owner = m2o_id(p["company_id"])
+                    return p["company_id"][1] if owner and owner != company_id else None
+        return None
 
     def pricelist_id(self, acc):
         return self.pricelist_for(text(acc.get("CurrencyIsoCode")))

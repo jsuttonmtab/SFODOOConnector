@@ -215,7 +215,11 @@ the order. SF price books are **not** synced (Finance, 2026-10-14). Instead the
 connector keeps one Odoo pricelist per currency (GBP, CNY, EUR, JPY, USD) purely to
 carry the currency; prices always come from SF. The account-level
 `CurrencyIsoCode` sets the partner's default pricelist, and each order uses the
-pricelist matching the opportunity currency.
+pricelist matching the opportunity currency. For a new order (or one with no pricelist): the billing company's own
+pricelist in that currency; if it has none, a shared one (no company, e.g. "Default (USD)"). Another company's
+pricelist is never used, and none is created. An existing order keeps its current pricelist when that is its
+company's own or a shared one, even if the rule would now pick another; only a pricelist that belongs to another
+company stops the order.
 
 ### 4.3 Which opportunities sync, and change detection
 The award-won stage is exactly `07: Award Won / Contract signed`. The full stage
@@ -588,6 +592,8 @@ sf data query --query "SELECT ContentDocument.Title, ContentDocument.FileExtensi
 | 2026-10-28 | Stage reversal of an unconfirmed quotation (draft or sent): cancel it, note why, no To Do. Confirmed orders keep the note and To Do. Reopen only quotations the connector cancelled (`sf_cancelled_by_sync`) when the opportunity returns | Finance |
 | 2026-10-28 | Source Document shown as "Sales Order Name" in the order views (label only, field not renamed) | Finance |
 | 2026-11-17 | Information-only lines stay on the order and are invoiced at 0, but are not printed on the invoice or the quotation/sales order PDF. They still create deliverables | Finance and Salesforce admin (test session) |
+| 2026-11-23 | Order pricelist: the billing company's own pricelist in the currency, else a shared one (no company, e.g. "Default (USD)"). Another company's is never used; none is created. An existing order keeps its current pricelist when it is its company's or shared; only another company's stops the order | Finance and Salesforce admin (sandbox test) |
+| 2026-11-23 | Invoice PDFs: an invoice is skipped only when its send was recorded with the current render key (module version, report, company invoice settings) and after its last change. Otherwise it is rendered and sent again, and the reason is printed. `sync_orders --opportunity <SF_ID> --refresh-pdfs` re-renders and replaces that opportunity's invoice PDFs whatever is stored | Finance |
 | 2026-11-17 | The Salesforce description (Combined_Product_Description__c) is its own field, sf_combined_description. The line name is the product name only, so the product appears once; the description is printed after it | Finance and Salesforce admin (test session) |
 | 2026-11-23 | Invoice lines: the Salesforce description (when it differs from the line text) prints on a second line under the product name, in italics, same size, no brackets. Amounts stay on the first line; rows still never split across pages | Finance |
 | 2026-11-19 | Invoice line text: when the line text and the Salesforce description are the same (ignoring case, spaces and brackets), or the description is the product name, it prints once as plain text, with no brackets. Otherwise the product name is followed by the description in brackets, as before | Finance

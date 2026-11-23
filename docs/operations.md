@@ -466,6 +466,20 @@ exists only after the upgrade.
    prints once, as plain text, with no brackets or italics. A line with a different description still prints the product
    name, then the description in brackets.
 
+## Upgrade to sf_connector 19.0.1.8.16 (pricelist rule, PDF re-render reasons, --refresh-pdfs)
+
+1. Odoo: Apps → sf_connector → **Upgrade**. No migration. The version is part of the render key, so **every sent
+   invoice is rendered again on the next run that sends invoice PDFs**. An attachment is replaced only when its PDF
+   differs (checksum or size), so most will print `unchanged`. Expect a large run; check the dry run first. The invoice PDF step runs only with `SF_INVOICE_PDF=true`.
+2. Orders: a mTab LLC USD order now uses the shared "Default (USD)" pricelist when mTab LLC has none of its own. Before
+   this, every such order was refused ("has no USD pricelist"). In the sandbox the strict rule refused 337 opportunities;
+   the new rule refuses none. Check the dry run: no `has no ... pricelist` lines.
+3. The run prints `render <invoice>: <reason>` for each invoice it renders. A line `unchanged ... (sent with the current
+   settings since the invoice last changed)` means it was skipped.
+4. To re-send one opportunity's invoice PDFs (for example after a template fix), run:
+   `python -m connector.sync_orders --opportunity <SF_ID> --refresh-pdfs`. It re-renders every posted invoice on that
+   opportunity and replaces its attachment. It is refused without `--opportunity`.
+
 ## Upgrade to sf_connector 19.0.1.8.15 (description on its own line)
 
 1. Odoo: Apps → sf_connector → **Upgrade**. No migration. Invoices re-render on their next send (render key changes).
